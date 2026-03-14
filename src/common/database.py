@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 import duckdb
 import pandas as pd
-from src.config import config
-from src.logger import logger
-from src.models import DataSource
+from src.common.config import config
+from src.common.logger import logger
+from src.common.models import DataSource
 
 
 class DuckDBManager:
@@ -94,36 +94,43 @@ class DuckDBManager:
         return self.conn.execute(query)
     
     def insert_dataframe(self, df: pd.DataFrame, table_name: str, 
-                        if_exists: str = "append"):
+                        if_exists: str = "append", unique_keys: Optional[List[str]] = None):
         """
-        插入 DataFrame
+        插入 DataFrame（支持增量去重）
         
         Args:
             df: pandas DataFrame
             table_name: 表名
             if_exists: 如果表存在的行为 ('fail', 'replace', 'append')
+            unique_keys: 唯一键列表，用于去重
         """
         if df.empty:
             logger.warning(f"DataFrame 为空，跳过插入 {table_name}")
             return
         
-        # 注册 DataFrame 为临时视图，然后从视图创建表
         temp_view_name = f"temp_{table_name}_{id(df)}"
-        
-        # 使用 duckdb 的 read_pandas 来创建视图
         self.conn.execute(f"CREATE OR REPLACE VIEW {temp_view_name} AS SELECT * FROM df")
         
-        # 如果表不存在，从视图创建
         if not self.table_exists(table_name):
             self.conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM {temp_view_name}")
+            logger.info(f"创建表 {table_name}，插入 {len(df)} 条记录")
         else:
-            # 表存在，插入数据
-            self.conn.execute(f"INSERT INTO {table_name} SELECT * FROM {temp_view_name}")
+            if unique_keys and if_exists == "append":
+                # 增量插入，去重
+                keys_str = ", ".join(unique_keys)
+                self.conn.execute(f"""
+                    INSERT INTO {table_name}
+                    SELECT * FROM {temp_view_name}
+                    WHERE ({keys_str}) NOT IN (
+                        SELECT {keys_str} FROM {table_name}
+                    )
+                """)
+                logger.info(f"增量插入到 {table_name}（去重）")
+            else:
+                self.conn.execute(f"INSERT INTO {table_name} SELECT * FROM {temp_view_name}")
+                logger.info(f"插入 {len(df)} 条记录到 {table_name}")
         
-        # 清理视图
         self.conn.execute(f"DROP VIEW {temp_view_name}")
-        
-        logger.info(f"成功插入 {len(df)} 条记录到 {table_name}")
     
     def insert_records(self, table_name: str, records: List[Dict[str, Any]]):
         """插入多条记录"""

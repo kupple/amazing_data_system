@@ -5,12 +5,12 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.logger import logger
+from src.common.logger import logger
 
 
 def test_qmt_client():
     """测试 QMT 客户端"""
-    from src.qmt.client import QMTClient
+    from src.collectors.miniqmt.client import QMTClient
     
     logger.info("=== 测试 QMT 客户端 ===")
     
@@ -45,7 +45,7 @@ def test_qmt_client():
 
 def test_qmt_database():
     """测试 QMT 数据库"""
-    from src.qmt.database import QMTDatabase
+    from src.collectors.miniqmt.database import QMTDatabase
     
     logger.info("=== 测试 QMT 数据库 ===")
     
@@ -65,7 +65,7 @@ def test_qmt_database():
 
 def test_qmt_scheduler():
     """测试 QMT 调度器"""
-    from src.qmt.scheduler import QMTScheduler
+    from src.collectors.miniqmt.scheduler import QMTScheduler
     
     logger.info("=== 测试 QMT 调度器 ===")
     

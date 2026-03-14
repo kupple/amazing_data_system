@@ -12,9 +12,9 @@ import uvicorn
 import asyncio
 
 from src.qmt.database import get_qmt_db
-from src.qmt.client import get_qmt_client
-from src.qmt.scheduler import get_qmt_scheduler
-from src.logger import logger
+from src.collectors.miniqmt.client import get_qmt_client
+from src.collectors.miniqmt.scheduler import get_qmt_scheduler
+from src.common.logger import logger
 
 
 # MCP 请求/响应模型

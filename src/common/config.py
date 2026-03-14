@@ -4,41 +4,45 @@
 from dataclasses import dataclass
 from typing import Optional
 import os
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 
 @dataclass
 class AmazingDataConfig:
     """AmazingData 连接配置"""
-    account: str = "225300062129"
-    password: str = "22530006212920260312"
-    ip: str = "120.86.124.106"
-    port: int = 8600
-    permission_start: str = "2026-03-12"
-    permission_end: str = "2026-04-11"
-    phone: str = "13169959600"
-    email: str = "rtys788@icloud.com"
+    account: str
+    password: str
+    ip: str
+    port: int
+    permission_start: str
+    permission_end: str
+    phone: str
+    email: str
 
 
 @dataclass
 class DatabaseConfig:
     """数据库配置"""
-    db_path: str = "./data/amazing_data.duckdb"
-    backup_path: str = "./data/backup"
+    db_path: str
+    backup_path: str
 
 
 @dataclass
 class APIConfig:
     """API 服务配置"""
-    host: str = "0.0.0.0"
-    port: int = 8000
+    host: str
+    port: int
     reload: bool = False
 
 
 @dataclass
 class SchedulerConfig:
     """定时任务配置"""
-    enabled: bool = True
-    interval_hours: int = 1  # 每小时增量更新
+    enabled: bool
+    interval_hours: int
     retry_times: int = 3
     retry_delay_seconds: int = 60
 
@@ -46,24 +50,24 @@ class SchedulerConfig:
 @dataclass
 class LogConfig:
     """日志配置"""
-    log_dir: str = "./logs"
-    log_level: str = "INFO"
+    log_dir: str
+    log_level: str
     max_log_files: int = 30
 
 
 @dataclass
 class MCPConfig:
     """MCP 服务配置"""
-    enabled: bool = True
-    port: int = 8001
+    enabled: bool
+    port: int
 
 
 @dataclass
 class QMTConfig:
     """QMT 连接配置"""
-    qmt_path: str = "C:/zhiyue/zqxtspeed/xmXtp"  # QMT 安装路径
-    account_id: str = ""  # 资金账号
-    db_path: str = "./data/qmt_data.duckdb"  # QMT 专用数据库
+    qmt_path: str
+    account_id: str
+    db_path: str
 
 
 @dataclass
@@ -82,13 +86,18 @@ class AppConfig:
         """从环境变量加载配置"""
         return cls(
             amazing_data=AmazingDataConfig(
-                account=os.getenv("AD_ACCOUNT", "225300062129"),
-                password=os.getenv("AD_PASSWORD", "22530006212920260312"),
-                ip=os.getenv("AD_IP", "120.86.124.106"),
+                account=os.getenv("AD_ACCOUNT"),
+                password=os.getenv("AD_PASSWORD"),
+                ip=os.getenv("AD_IP"),
                 port=int(os.getenv("AD_PORT", "8600")),
+                permission_start=os.getenv("AD_PERMISSION_START"),
+                permission_end=os.getenv("AD_PERMISSION_END"),
+                phone=os.getenv("AD_PHONE"),
+                email=os.getenv("AD_EMAIL"),
             ),
             database=DatabaseConfig(
                 db_path=os.getenv("DB_PATH", "./data/amazing_data.duckdb"),
+                backup_path=os.getenv("DB_BACKUP_PATH", "./data/backup"),
             ),
             api=APIConfig(
                 host=os.getenv("API_HOST", "0.0.0.0"),
@@ -100,9 +109,11 @@ class AppConfig:
             ),
             log=LogConfig(
                 log_dir=os.getenv("LOG_DIR", "./logs"),
+                log_level=os.getenv("LOG_LEVEL", "INFO"),
             ),
             mcp=MCPConfig(
                 enabled=os.getenv("MCP_ENABLED", "true").lower() == "true",
+                port=int(os.getenv("MCP_PORT", "8001")),
             ),
             qmt=QMTConfig(
                 qmt_path=os.getenv("QMT_PATH", "C:/zhiyue/zqxtspeed/xmXtp"),

@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 import pandas as pd
 
-from src.api import app
-from src.database import DuckDBManager
+from src.services.api import app
+from src.common.database import DuckDBManager
 
 
 @pytest.fixture

@@ -120,7 +120,7 @@ class TestRetryDecorator:
     
     def test_retry_success(self):
         """测试重试成功"""
-        from src.retry import retry
+        from src.common.retry import retry
         
         call_count = 0
         
@@ -139,7 +139,7 @@ class TestRetryDecorator:
     
     def test_retry_exhausted(self):
         """测试重试耗尽"""
-        from src.retry import retry
+        from src.common.retry import retry
         
         @retry(max_attempts=3, initial_delay=0.1)
         def always_fail():
@@ -152,7 +152,7 @@ class TestRetryDecorator:
     
     def test_retry_non_retryable(self):
         """测试不可重试错误"""
-        from src.retry import retry, NonRetryableError
+        from src.common.retry import retry, NonRetryableError
         
         @retry(max_attempts=3, initial_delay=0.1)
         def non_retryable():

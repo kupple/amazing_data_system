@@ -11,9 +11,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
-from src.config import config
-from src.logger import logger
-from src.database import get_db, DuckDBManager
+from src.common.config import config
+from src.common.logger import logger
+from src.common.database import get_db, DuckDBManager
 
 
 # MCP 协议类型

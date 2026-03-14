@@ -6,8 +6,8 @@ import functools
 from typing import Callable, Any, Optional, Type, Tuple
 from dataclasses import dataclass
 from datetime import datetime
-from src.logger import logger
-from src.config import config
+from src.common.logger import logger
+from src.common.config import config
 
 
 @dataclass

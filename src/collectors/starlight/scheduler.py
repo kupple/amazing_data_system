@@ -9,12 +9,12 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
-from src.config import config
-from src.logger import logger
-from src.client import get_client, AmazingDataClient
-from src.database import get_db, DuckDBManager
-from src.retry import retry_manager
-from src.models import DataSource
+from src.common.config import config
+from src.common.logger import logger
+from src.collectors.starlight.client import get_client, AmazingDataClient
+from src.common.database import get_db, DuckDBManager
+from src.common.retry import retry_manager
+from src.common.models import DataSource
 
 
 class DataFetcher:
@@ -27,6 +27,7 @@ class DataFetcher:
     
     def fetch_and_save(self, data_type: DataSource, 
                        table_name: Optional[str] = None,
+                       unique_keys: Optional[List[str]] = None,
                        **kwargs) -> Dict[str, Any]:
         """
         获取并保存数据
@@ -34,6 +35,7 @@ class DataFetcher:
         Args:
             data_type: 数据类型
             table_name: 表名（默认使用 data_type）
+            unique_keys: 唯一键，用于去重
             **kwargs: 其他参数
             
         Returns:
@@ -43,34 +45,24 @@ class DataFetcher:
             table_name = data_type.value
         
         try:
-            # 确保连接
             if not self.client.is_connected:
                 self.client.login()
             
-            # 获取数据
             logger.info(f"开始获取数据: {data_type}")
             df = self.client.fetch_data(data_type, **kwargs)
             
             if df.empty:
                 logger.warning(f"数据为空: {data_type}")
-                self.db.save_fetch_record(
-                    data_type.value, 
-                    success=True, 
-                    record_count=0
-                )
+                self.db.save_fetch_record(data_type.value, success=True, record_count=0)
                 logger.log_fetch(data_type.value, True, 0)
                 return {"success": True, "record_count": 0}
             
-            # 保存到数据库
-            self.db.insert_dataframe(df, table_name)
+            # 保存到数据库（增量去重）
+            self.db.insert_dataframe(df, table_name, unique_keys=unique_keys)
             
-            # 记录成功
             self.db.save_fetch_record(
-                data_type.value,
-                success=True,
-                record_count=len(df),
-                start_date=kwargs.get("start_date"),
-                end_date=kwargs.get("end_date")
+                data_type.value, success=True, record_count=len(df),
+                start_date=kwargs.get("start_date"), end_date=kwargs.get("end_date")
             )
             logger.log_fetch(data_type.value, True, len(df))
             
@@ -79,16 +71,9 @@ class DataFetcher:
         except Exception as e:
             error_msg = str(e)
             logger.error(f"获取数据失败 {data_type}: {error_msg}")
-            
-            # 记录失败
-            self.db.save_fetch_record(
-                data_type.value,
-                success=False,
-                error_message=error_msg
-            )
+            self.db.save_fetch_record(data_type.value, success=False, error_message=error_msg)
             logger.log_fetch(data_type.value, False, 0, error_msg)
             
-            # 添加到重试队列
             retry_manager.add_failed_task(
                 f"{data_type.value}_{datetime.now().timestamp()}",
                 {
@@ -228,7 +213,7 @@ class Scheduler:
         logger.info("定时任务已添加")
     
     def sync_realtime_data(self):
-        """同步实时行情数据"""
+        """同步实时行情数据（先删后存）"""
         logger.info("开始同步实时行情数据")
         
         data_types = [
@@ -240,34 +225,41 @@ class Scheduler:
         
         results = []
         for data_type, table_name in data_types:
-            result = self.fetcher.fetch_and_save(data_type, table_name)
-            results.append({"data_type": data_type.value, **result})
+            try:
+                if not self.client.is_connected:
+                    self.client.login()
+                
+                df = self.client.fetch_data(data_type)
+                if not df.empty:
+                    # 快照数据：先删后存
+                    self.fetcher.db.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+                    self.fetcher.db.insert_dataframe(df, table_name)
+                    logger.info(f"{table_name} 已更新，共 {len(df)} 条")
+                    results.append({"data_type": data_type.value, "success": True, "record_count": len(df)})
+            except Exception as e:
+                logger.error(f"同步 {table_name} 失败: {e}")
+                results.append({"data_type": data_type.value, "success": False, "error": str(e)})
         
         return results
     
     def sync_historical_data(self):
-        """同步历史行情数据"""
+        """同步历史行情数据（增量）"""
         logger.info("开始同步历史行情数据")
         
-        # 获取交易日历
-        calendar = self.fetcher.client.get_trading_calendar(
-            (datetime.now() - timedelta(days=30)).strftime("%Y%m%d"),
-            datetime.now().strftime("%Y%m%d")
-        )
-        
         # 获取所有股票代码
-        sec_codes = self.fetcher.db.query("SELECT DISTINCT sec_code FROM stock_snapshot LIMIT 100")
+        sec_codes = self.fetcher.db.query("SELECT DISTINCT sec_code FROM stock_snapshot")
         
         results = []
         for _, row in sec_codes.iterrows():
             sec_code = row["sec_code"]
             try:
-                result = self.fetcher.fetch_and_save(
+                # 使用增量获取
+                result = self.fetcher.incremental_fetch(
                     DataSource.HISTORICAL_KLINE,
-                    table_name=f"kline_1D_{sec_code}",
+                    table_name=f"kline_{sec_code}",
+                    date_column="trade_date",
                     sec_code=sec_code,
-                    kline_type="1D",
-                    count=100
+                    kline_type="1D"
                 )
                 results.append({"sec_code": sec_code, **result})
             except Exception as e:
@@ -276,7 +268,7 @@ class Scheduler:
         return results
     
     def sync_financial_data(self):
-        """同步财务数据"""
+        """同步财务数据（日期增量）"""
         logger.info("开始同步财务数据")
         
         data_types = [
@@ -288,21 +280,20 @@ class Scheduler:
         ]
         
         results = []
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=90)).strftime("%Y%m%d")
-        
         # 获取所有股票代码
-        sec_codes = self.fetcher.db.query("SELECT DISTINCT sec_code FROM stock_snapshot LIMIT 50")
+        sec_codes = self.fetcher.db.query("SELECT DISTINCT sec_code FROM stock_snapshot")
         
         for data_type in data_types:
             for _, row in sec_codes.iterrows():
                 sec_code = row["sec_code"]
+                table_name = f"{data_type.value}_{sec_code}"
                 try:
-                    result = self.fetcher.fetch_and_save(
+                    # 使用日期增量
+                    result = self.fetcher.incremental_fetch(
                         data_type,
-                        sec_code=sec_code,
-                        start_date=start_date,
-                        end_date=end_date
+                        table_name=table_name,
+                        date_column="report_date",
+                        sec_code=sec_code
                     )
                     results.append({"data_type": data_type.value, "sec_code": sec_code, **result})
                 except Exception as e:
@@ -311,26 +302,48 @@ class Scheduler:
         return results
     
     def sync_basic_data(self):
-        """同步基础数据"""
+        """同步基础数据（先删后存）"""
         logger.info("开始同步基础数据")
         
-        data_types = [
-            (DataSource.SECURITY_INFO, "security_info"),
+        # 列表类数据：先删后存
+        list_data = [
             (DataSource.SECURITY_CODE, "security_code"),
             (DataSource.FUTURES_CODE, "futures_code"),
             (DataSource.SECURITY_BASIC, "security_basic"),
-            (DataSource.TRADING_CALENDAR, "trading_calendar"),
         ]
         
         results = []
-        for data_type, table_name in data_types:
-            result = self.fetcher.fetch_and_save(data_type, table_name)
+        for data_type, table_name in list_data:
+            try:
+                if not self.client.is_connected:
+                    self.client.login()
+                
+                df = self.client.fetch_data(data_type)
+                if not df.empty:
+                    # 先删除旧数据
+                    self.fetcher.db.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+                    # 插入新数据
+                    self.fetcher.db.insert_dataframe(df, table_name)
+                    logger.info(f"{table_name} 已更新，共 {len(df)} 条")
+                    results.append({"data_type": data_type.value, "success": True, "record_count": len(df)})
+            except Exception as e:
+                logger.error(f"同步 {table_name} 失败: {e}")
+                results.append({"data_type": data_type.value, "success": False, "error": str(e)})
+        
+        # 有日期的数据：增量更新
+        date_data = [
+            (DataSource.SECURITY_INFO, "security_info", "trade_date"),
+            (DataSource.TRADING_CALENDAR, "trading_calendar", "trade_date"),
+        ]
+        
+        for data_type, table_name, date_col in date_data:
+            result = self.fetcher.incremental_fetch(data_type, table_name, date_column=date_col)
             results.append({"data_type": data_type.value, **result})
         
         return results
     
     def sync_holder_data(self):
-        """同步股东数据"""
+        """同步股东数据（日期增量）"""
         logger.info("开始同步股东数据")
         
         data_types = [
@@ -340,21 +353,20 @@ class Scheduler:
         ]
         
         results = []
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
-        
         # 获取所有股票代码
-        sec_codes = self.fetcher.db.query("SELECT DISTINCT sec_code FROM stock_snapshot LIMIT 50")
+        sec_codes = self.fetcher.db.query("SELECT DISTINCT sec_code FROM stock_snapshot")
         
         for data_type in data_types:
             for _, row in sec_codes.iterrows():
                 sec_code = row["sec_code"]
+                table_name = f"{data_type.value}_{sec_code}"
                 try:
-                    result = self.fetcher.fetch_and_save(
+                    # 使用日期增量
+                    result = self.fetcher.incremental_fetch(
                         data_type,
-                        sec_code=sec_code,
-                        start_date=start_date,
-                        end_date=end_date
+                        table_name=table_name,
+                        date_column="end_date",
+                        sec_code=sec_code
                     )
                     results.append({"data_type": data_type.value, "sec_code": sec_code, **result})
                 except Exception as e:

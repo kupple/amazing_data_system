@@ -8,7 +8,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, Dict, Any
 from logging.handlers import RotatingFileHandler
-from src.config import config
+from src.common.config import config
 
 
 class DateEncoder(json.JSONEncoder):

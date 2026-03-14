@@ -25,10 +25,10 @@ def _check_sdk():
         print(f"警告: AmazingData SDK 不可用: {e}")
         return False
 
-from src.config import config
-from src.logger import logger
-from src.retry import retry, retry_manager
-from src.models import DataSource
+from src.common.config import config
+from src.common.logger import logger
+from src.common.retry import retry, retry_manager
+from src.common.models import DataSource
 
 
 class AmazingDataClient:

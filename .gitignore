@@ -36,10 +36,15 @@ ENV/
 .coverage
 htmlcov/
 
+# Environment variables
+.env
+
 # Data
 data/*.duckdb
 data/*.db
 logs/*.log
+logs/*.jsonl
+logs/*.json
 
 # OS
 .DS_Store

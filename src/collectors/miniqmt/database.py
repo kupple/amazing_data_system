@@ -8,7 +8,7 @@ from datetime import datetime
 import pandas as pd
 import duckdb
 
-from src.logger import logger
+from src.common.logger import logger
 
 
 class QMTDatabase:

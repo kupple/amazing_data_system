@@ -15,9 +15,9 @@ os.environ.setdefault("AD_PASSWORD", "22530006212920260312")
 os.environ.setdefault("AD_IP", "120.86.124.106")
 os.environ.setdefault("AD_PORT", "8600")
 
-from src.config import config
-from src.database import DuckDBManager
-from src.models import DataSource
+from src.common.config import config
+from src.common.database import DuckDBManager
+from src.common.models import DataSource
 
 
 class TestConnection:

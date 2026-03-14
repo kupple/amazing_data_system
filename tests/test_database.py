@@ -8,7 +8,7 @@ import shutil
 import pandas as pd
 from datetime import datetime, date
 
-from src.database import DuckDBManager
+from src.common.database import DuckDBManager
 
 
 class TestDuckDBManager:
