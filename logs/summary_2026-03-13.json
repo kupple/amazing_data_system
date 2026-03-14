@@ -1,0 +1,14 @@
+{
+  "stock_snapshot": {
+    "date": "2026-03-13",
+    "success_count": 0,
+    "failed_count": 1,
+    "total_records": 0,
+    "errors": [
+      {
+        "time": "2026-03-13T11:05:35.948299",
+        "error": "'EnvSnapshot' object is not iterable"
+      }
+    ]
+  }
+}
