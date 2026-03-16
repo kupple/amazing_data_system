@@ -34,3 +34,16 @@ class BaseCollector(ABC):
     def get_kline(self, sec_code: str, start_date: str, end_date: str, **kwargs) -> pd.DataFrame:
         """获取K线数据"""
         pass
+
+
+# 注册数据源
+from src.collectors.akshare import AkshareClient
+from src.collectors.starlight import AmazingDataClient
+from src.collectors.miniqmt import QMTClient as MiniQMTClient
+
+__all__ = [
+    'BaseCollector',
+    'AkshareClient',
+    'AmazingDataClient', 
+    'MiniQMTClient',
+]

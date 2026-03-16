@@ -8,19 +8,16 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, List
 from src.common.logger import logger
+from src.collectors import BaseCollector
 
 
-class AkshareClient:
+class AkshareClient(BaseCollector):
     """Akshare 客户端"""
 
     def __init__(self):
-        self._connected = True
+        super().__init__("akshare")
         self._last_request_time = 0
         self._min_request_interval = 2  # 最小请求间隔（秒）
-
-    @property
-    def is_connected(self) -> bool:
-        return self._connected
 
     def connect(self) -> bool:
         """连接（无需登录）"""
@@ -151,6 +148,11 @@ class AkshareClient:
         except Exception as e:
             logger.error(f"获取日线数据失败: {e}")
             raise
+
+    def get_kline(self, sec_code: str, start_date: str, end_date: str, **kwargs) -> pd.DataFrame:
+        """获取K线 (get_daily_kline 的别名)"""
+        adjust = kwargs.get('adjust', 'qfq')
+        return self.get_daily_kline(sec_code, start_date, end_date, adjust)
 
     def get_realtime_quote(self, sec_codes: List[str]) -> pd.DataFrame:
         """
