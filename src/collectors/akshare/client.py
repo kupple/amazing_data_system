@@ -1,23 +1,42 @@
 """
 Akshare 数据采集客户端
 免费接口：股票列表、个股信息、日线后复权
+支持增量同步
 """
 import time
+import os
 import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, List
 from src.common.logger import logger
+from src.common.database import DuckDBManager
 from src.collectors import BaseCollector
 
 
 class AkshareClient(BaseCollector):
     """Akshare 客户端"""
 
-    def __init__(self):
+    def __init__(self, db_path: str = "./data/akshare_data.duckdb"):
         super().__init__("akshare")
         self._last_request_time = 0
         self._min_request_interval = 2  # 最小请求间隔（秒）
+        
+        # 数据库
+        self._db = None
+        self._db_path = db_path
+
+    @property
+    def db(self) -> DuckDBManager:
+        """获取数据库实例"""
+        if self._db is None:
+            self._db = DuckDBManager(self._db_path)
+            self._init_db()
+        return self._db
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
 
     def connect(self) -> bool:
         """连接（无需登录）"""
@@ -37,158 +56,274 @@ class AkshareClient(BaseCollector):
             time.sleep(self._min_request_interval - elapsed)
         self._last_request_time = time.time()
 
-    def get_stock_list(self) -> pd.DataFrame:
-        """
-        获取股票列表
+    def _init_db(self):
+        """初始化数据库表"""
+        # 股票列表
+        self._db.conn.execute("""
+            CREATE TABLE IF NOT EXISTS stock_list (
+                sec_code VARCHAR PRIMARY KEY,
+                name VARCHAR,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         
-        Returns:
-            DataFrame: 股票代码列表
-            Columns: code, name
-        """
+        # 日线数据
+        self._db.conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_kline (
+                id INTEGER PRIMARY KEY,
+                sec_code VARCHAR,
+                trade_date DATE,
+                open DOUBLE,
+                high DOUBLE,
+                low DOUBLE,
+                close DOUBLE,
+                volume BIGINT,
+                amount DOUBLE,
+                amplitude DOUBLE,
+                pct_change DOUBLE,
+                change_value DOUBLE,
+                turnover DOUBLE,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(sec_code, trade_date)
+            )
+        """)
+        
+        # 创建索引
+        self._db.conn.execute("CREATE INDEX IF NOT EXISTS idx_kline_code ON daily_kline(sec_code)")
+        self._db.conn.execute("CREATE INDEX IF NOT EXISTS idx_kline_date ON daily_kline(trade_date)")
+        
+        self._db.conn.commit()
+        logger.info("Akshare 数据库初始化完成")
+
+    def get_latest_date(self, sec_code: str) -> Optional[str]:
+        """获取本地最新日期"""
         try:
+            result = self.db.conn.execute("""
+                SELECT MAX(trade_date) as latest_date 
+                FROM daily_kline 
+                WHERE sec_code = ?
+            """, [sec_code]).fetchone()
+            
+            if result and result[0]:
+                return result[0].strftime('%Y%m%d')
+            return None
+        except:
+            return None
+
+    def get_all_codes(self) -> List[str]:
+        """获取本地所有股票代码"""
+        try:
+            result = self.db.conn.execute("SELECT sec_code FROM stock_list").fetchall()
+            return [r[0] for r in result]
+        except:
+            return []
+
+    def sync_stock_list(self, force: bool = False) -> dict:
+        """同步股票列表"""
+        start_time = datetime.now()
+        logger.info("开始同步股票列表")
+        
+        try:
+            # 检查是否需要更新
+            if not force:
+                result = self.db.conn.execute("""
+                    SELECT MAX(update_time) FROM stock_list
+                """).fetchone()
+                
+                if result and result[0]:
+                    if (datetime.now() - result[0]).total_seconds() < 3600:
+                        logger.info("股票列表1小时内已更新，跳过")
+                        return {'success': True, 'record_count': 0, 'message': '已更新'}
+            
+            # 获取新数据
             self._wait_rate_limit()
             df = ak.stock_info_a_code_name()
             df.columns = ['sec_code', 'name']
-            logger.info(f"获取股票列表: {len(df)} 条")
-            return df
-        except Exception as e:
-            logger.error(f"获取股票列表失败: {e}")
-            raise
-
-    def get_stock_info(self, sec_code: str) -> pd.DataFrame:
-        """
-        获取个股信息
-        
-        Args:
-            sec_code: 股票代码 (如: '000001')
             
-        Returns:
-            DataFrame: 个股信息
-        """
-        try:
-            # 去掉 .SH 或 .SZ 后缀
-            code = sec_code.replace('.SH', '').replace('.SZ', '')
-            df = ak.stock_individual_info_em(symbol=code)
-            
-            # 转换为键值对格式
-            info = {}
+            # 保存到数据库
+            count = 0
             for _, row in df.iterrows():
-                info[row['item']] = row['value']
+                try:
+                    self.db.conn.execute("""
+                        INSERT OR REPLACE INTO stock_list (sec_code, name, update_time)
+                        VALUES (?, ?, ?)
+                    """, [row['sec_code'], row['name'], datetime.now()])
+                    count += 1
+                except Exception as e:
+                    logger.debug(f"插入失败: {e}")
             
-            result = pd.DataFrame([info])
-            result['sec_code'] = sec_code
-            logger.info(f"获取个股信息: {sec_code}")
-            return result
+            self.db.conn.commit()
+            
+            logger.info(f"股票列表同步完成: {count} 条")
+            return {'success': True, 'record_count': count}
+            
         except Exception as e:
-            logger.error(f"获取个股信息失败: {e}")
-            raise
+            error_msg = str(e)
+            logger.error(f"股票列表同步失败: {error_msg}")
+            return {'success': False, 'error': error_msg}
+
+    def sync_daily_kline(self, sec_code: str = None, force: bool = False) -> dict:
+        """同步日线数据（增量）"""
+        start_time = datetime.now()
+        
+        # 获取要同步的股票列表
+        if sec_code:
+            codes = [sec_code]
+        else:
+            codes = self.get_all_codes()
+            if not codes:
+                self.sync_stock_list()
+                codes = self.get_all_codes()
+        
+        if not codes:
+            logger.warning("没有股票需要同步")
+            return {'success': True, 'record_count': 0}
+        
+        total_count = 0
+        success_count = 0
+        
+        logger.info(f"开始同步日线数据: {len(codes)} 只股票")
+        
+        for code in codes:
+            try:
+                # 获取增量起始日期
+                if not force:
+                    latest_date = self.get_latest_date(code)
+                    start_date = latest_date
+                else:
+                    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
+                
+                end_date = datetime.now().strftime('%Y%m%d')
+                
+                if start_date == end_date:
+                    logger.debug(f"{code} 已是最新，跳过")
+                    continue
+                
+                self._wait_rate_limit()
+                
+                # 获取数据
+                code_raw = code.replace('.SH', '').replace('.SZ', '')
+                df = ak.stock_zh_a_hist(
+                    symbol=code_raw,
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust="qfq"
+                )
+                
+                if df is None or df.empty:
+                    continue
+                
+                # 重命名列
+                df = df.rename(columns={
+                    '日期': 'trade_date',
+                    '股票代码': 'sec_code',
+                    '开盘': 'open',
+                    '收盘': 'close',
+                    '最高': 'high',
+                    '最低': 'low',
+                    '成交量': 'volume',
+                    '成交额': 'amount',
+                    '振幅': 'amplitude',
+                    '涨跌幅': 'pct_change',
+                    '涨跌额': 'change_value',
+                    '换手率': 'turnover'
+                })
+                
+                df['sec_code'] = code
+                df['update_time'] = datetime.now()
+                
+                # 插入数据
+                count = 0
+                for _, row in df.iterrows():
+                    try:
+                        self.db.conn.execute("""
+                            INSERT OR IGNORE INTO daily_kline 
+                            (sec_code, trade_date, open, high, low, close, volume, amount, 
+                             amplitude, pct_change, change_value, turnover, update_time)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, [
+                            row['sec_code'], row['trade_date'], row['open'], row['high'],
+                            row['low'], row['close'], row['volume'], row['amount'],
+                            row['amplitude'], row['pct_change'], row['change_value'], 
+                            row['turnover'], row['update_time']
+                        ])
+                        count += 1
+                    except:
+                        pass
+                
+                self.db.conn.commit()
+                total_count += count
+                success_count += 1
+                
+                logger.debug(f"{code}: {count} 条")
+                
+            except Exception as e:
+                logger.debug(f"{code} 失败: {e}")
+        
+        logger.info(f"日线同步完成: {success_count}/{len(codes)} 只成功, {total_count} 条数据")
+        
+        return {
+            'success': True, 
+            'record_count': total_count,
+            'success_count': success_count
+        }
+
+    def sync_all(self, force: bool = False) -> dict:
+        """同步所有数据"""
+        results = {}
+        results['stock_list'] = self.sync_stock_list(force=force)
+        results['daily_kline'] = self.sync_daily_kline(force=force)
+        return results
+
+    def get_stock_list(self) -> pd.DataFrame:
+        """获取股票列表 (从数据库)"""
+        return self.db.conn.execute("SELECT * FROM stock_list").df()
 
     def get_daily_kline(self, 
                        sec_code: str, 
                        start_date: str = None, 
                        end_date: str = None,
                        adjust: str = "qfq") -> pd.DataFrame:
-        """
-        获取日线后复权股价
+        """获取日线数据 (从数据库)"""
+        query = "SELECT * FROM daily_kline WHERE sec_code = ?"
+        params = [sec_code]
         
-        Args:
-            sec_code: 股票代码 (如: '000001', '600000')
-            start_date: 开始日期 (YYYYMMDD 或 YYYY-MM-DD)
-            end_date: 结束日期 (YYYYMMDD 或 YYYY-MM-DD)
-            adjust: 复权类型 ("qfq"=前复权, "hfq"=后复权, ""=不复权)
-            
-        Returns:
-            DataFrame: 日线数据
-            Columns: 日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 振幅, 涨跌幅, 涨跌额, 换手率
-        """
-        try:
-            self._wait_rate_limit()
-            
-            # 去掉 .SH 或 .SZ 后缀
-            code = sec_code.replace('.SH', '').replace('.SZ', '')
-            
-            # 转换日期格式
-            if start_date:
-                start_date = start_date.replace('-', '')
-            if end_date:
-                end_date = end_date.replace('-', '')
-            
-            # 默认获取近一年数据
-            if not end_date:
-                end_date = datetime.now().strftime('%Y%m%d')
-            if not start_date:
-                start_date = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
-            
-            df = ak.stock_zh_a_hist(
-                symbol=code,
-                start_date=start_date,
-                end_date=end_date,
-                adjust=adjust
-            )
-            
-            # 重命名列
-            df = df.rename(columns={
-                '日期': 'trade_date',
-                '股票代码': 'sec_code',
-                '开盘': 'open',
-                '收盘': 'close',
-                '最高': 'high',
-                '最低': 'low',
-                '成交量': 'volume',
-                '成交额': 'amount',
-                '振幅': 'amplitude',
-                '涨跌幅': 'pct_change',
-                '涨跌额': 'change',
-                '换手率': 'turnover'
-            })
-            
-            df['sec_code'] = sec_code
-            logger.info(f"获取日线数据: {sec_code}, {len(df)} 条")
-            return df
-        except Exception as e:
-            logger.error(f"获取日线数据失败: {e}")
-            raise
+        if start_date:
+            query += " AND trade_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND trade_date <= ?"
+            params.append(end_date)
+        
+        query += " ORDER BY trade_date"
+        
+        return self.db.conn.execute(query, params).df()
 
-    def get_kline(self, sec_code: str, start_date: str, end_date: str, **kwargs) -> pd.DataFrame:
-        """获取K线 (get_daily_kline 的别名)"""
-        adjust = kwargs.get('adjust', 'qfq')
-        return self.get_daily_kline(sec_code, start_date, end_date, adjust)
+    def get_kline(self, sec_code: str, start_date: str = None, end_date: str = None, **kwargs) -> pd.DataFrame:
+        """获取K线 (从数据库)"""
+        return self.get_daily_kline(sec_code, start_date, end_date)
+
+    def get_sync_status(self) -> dict:
+        """获取同步状态"""
+        try:
+            stock_count = self.db.conn.execute("SELECT COUNT(*) FROM stock_list").fetchone()[0]
+            kline_count = self.db.conn.execute("SELECT COUNT(*) FROM daily_kline").fetchone()[0]
+            
+            return {
+                'stock_count': stock_count,
+                'kline_count': kline_count
+            }
+        except Exception as e:
+            logger.error(f"获取同步状态失败: {e}")
+            return {}
 
     def get_realtime_quote(self, sec_codes: List[str]) -> pd.DataFrame:
-        """
-        获取实时行情
-        
-        Args:
-            sec_codes: 股票代码列表
-            
-        Returns:
-            DataFrame: 实时行情
-        """
+        """获取实时行情"""
         try:
-            # 去掉后缀
+            self._wait_rate_limit()
             codes = [c.replace('.SH', '').replace('.SZ', '') for c in sec_codes]
             df = ak.stock_zh_a_spot_em()
-            
-            # 过滤指定股票
             df = df[df['代码'].isin(codes)]
-            df = df.rename(columns={
-                '代码': 'sec_code',
-                '名称': 'name',
-                '最新价': 'last',
-                '涨跌幅': 'pct_change',
-                '涨跌额': 'change',
-                '成交量': 'volume',
-                '成交额': 'amount',
-                '振幅': 'amplitude',
-                '最高': 'high',
-                '最低': 'low',
-                '今开': 'open',
-                '昨收': 'pre_close',
-                '换手率': 'turnover',
-                '市盈率-动态': 'pe',
-                '市净率': 'pb'
-            })
-            logger.info(f"获取实时行情: {len(df)} 条")
             return df
         except Exception as e:
             logger.error(f"获取实时行情失败: {e}")
@@ -198,11 +333,11 @@ class AkshareClient(BaseCollector):
 # 全局客户端
 _client = None
 
-def get_client() -> AkshareClient:
+def get_client(db_path: str = "./data/akshare_data.duckdb") -> AkshareClient:
     """获取客户端实例"""
     global _client
     if _client is None:
-        _client = AkshareClient()
+        _client = AkshareClient(db_path)
         _client.connect()
     return _client
 
