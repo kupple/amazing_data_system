@@ -1,18 +1,22 @@
-import requests
-import sys
-sys.path.insert(0, r"C:\Users\mubin\Desktop\amazing_data_system")
+import baostock as bs
+import pandas as pd
 
-# First, check if API is running
-try:
-    r = requests.get("http://localhost:8000/health", timeout=5)
-    print("API is running:", r.text)
-except:
-    print("API not running, please start it first with: python main.py --mode api")
-    sys.exit(1)
+lg = bs.login()
+print(f'登录: {lg.error_code}')
 
-# Trigger sync
-r = requests.post(
-    "http://localhost:8000/api/sync/trigger",
-    json={"data_type": "trading_calendar", "force": True}
+rs = bs.query_history_k_data_plus(
+    code='sh.600000',
+    fields='date,open,high,low,close,volume,amount,pctChg',
+    start_date='2024-01-01',
+    end_date='2024-01-10',
+    frequency='d',
+    adjustflag='2'
 )
-print("Response:", r.text)
+
+data_list = []
+while rs.next():
+    data_list.append(rs.get_row_data())
+
+df = pd.DataFrame(data_list, columns=rs.fields)
+print(df)
+bs.logout()

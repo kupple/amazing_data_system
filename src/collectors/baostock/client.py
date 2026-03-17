@@ -1,6 +1,6 @@
 """
 Baostock 数据采集客户端
-免费接口：日线后复权数据
+免费接口：日线数据
 """
 import time
 import baostock as bs
@@ -18,7 +18,7 @@ class BaostockClient(BaseCollector):
     def __init__(self, db_path: str = "./data/baostock_data.duckdb"):
         super().__init__("baostock")
         self._last_request_time = 0
-        self._min_request_interval = 0.5  # 0.5秒间隔
+        self._min_request_interval = 0.5
         
         self._db = None
         self._db_path = db_path
@@ -35,7 +35,6 @@ class BaostockClient(BaseCollector):
         return self._connected
 
     def connect(self) -> bool:
-        """登录 Baostock"""
         try:
             lg = bs.login()
             if lg.error_code == '0':
@@ -71,7 +70,6 @@ class BaostockClient(BaseCollector):
         
         self._db.conn.execute("""
             CREATE TABLE IF NOT EXISTS daily_kline (
-                id INTEGER PRIMARY KEY,
                 sec_code VARCHAR,
                 trade_date DATE,
                 open DOUBLE,
@@ -80,7 +78,7 @@ class BaostockClient(BaseCollector):
                 close DOUBLE,
                 volume BIGINT,
                 amount DOUBLE,
-                turn DOUBLE,
+                pct_chg DOUBLE,
                 update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(sec_code, trade_date)
             )
@@ -177,14 +175,14 @@ class BaostockClient(BaseCollector):
                 
                 self._wait_rate_limit()
                 
-                # 查询数据 (adjustflag=2 表示后复权)
+                # 查询数据 (adjustflag=2 是前复权, 1是后复权)
                 rs = bs.query_history_k_data_plus(
-                    bs_code,
-                    'date,open,high,low,close,volume,amount,turn',
+                    code=bs_code,
+                    fields='date,open,high,low,close,volume,amount,pctChg',
                     start_date=start_date,
                     end_date=end_date,
                     frequency='d',
-                    adjustflag='2'
+                    adjustflag='2'  # 2=前复权
                 )
                 
                 if rs.error_code != '0':
@@ -198,8 +196,8 @@ class BaostockClient(BaseCollector):
                         try:
                             self.db.conn.execute("""
                                 INSERT OR IGNORE INTO daily_kline 
-                                (sec_code, trade_date, open, high, low, close, volume, amount, turn, update_time)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                (sec_code, trade_date, open, high, low, close, volume, amount, pct_chg, update_time)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """, [
                                 code, row[0],
                                 float(row[1]) if row[1] else None,
@@ -212,8 +210,8 @@ class BaostockClient(BaseCollector):
                                 datetime.now()
                             ])
                             count += 1
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"插入失败: {e}")
                 
                 self.db.conn.commit()
                 total_count += count
@@ -232,7 +230,7 @@ class BaostockClient(BaseCollector):
         results['daily_kline'] = self.sync_daily_kline(force=force)
         return results
 
-    def get_daily_kline(self, sec_code: str, start_date: str = None, end_date: str = None, adjust: str = "hfq") -> pd.DataFrame:
+    def get_daily_kline(self, sec_code: str, start_date: str = None, end_date: str = None, adjust: str = "qfq") -> pd.DataFrame:
         query = "SELECT * FROM daily_kline WHERE sec_code = ?"
         params = [sec_code]
         if start_date:
