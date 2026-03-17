@@ -179,9 +179,11 @@ class BaostockClient(BaseCollector):
                     if latest:
                         start_date = (datetime.strptime(latest, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
                     else:
-                        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+                        # 首次同步，获取全部历史数据
+                        start_date = '1990-01-01'
                 else:
-                    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+                    # 强制更新，获取全部历史数据
+                    start_date = '1990-01-01'
                 
                 end_date = datetime.now().strftime('%Y-%m-%d')
                 
