@@ -115,23 +115,38 @@ class BaostockClient(BaseCollector):
         return self.db.conn.execute("SELECT * FROM stock_list").df()
 
     def sync_stock_list(self) -> dict:
-        logger.info("同步股票列表")
-        codes = [
-            ('600000.SH', '浦发银行'), ('600036.SH', '招商银行'), ('600519.SH', '贵州茅台'),
-            ('000001.SH', '平安银行'), ('000002.SH', '万科A'), ('000333.SH', '美的集团'),
-            ('000651.SH', '格力电器'), ('000858.SH', '五粮液'), ('300750.SH', '宁德时代'),
-            ('688111.SH', '江苏银行'), ('688981.SH', '中芯国际'),
-        ]
-        for code, name in codes:
-            try:
-                self.db.conn.execute("""
-                    INSERT OR REPLACE INTO stock_list VALUES (?, ?, ?)
-                """, [code, name, datetime.now()])
-            except:
-                pass
+        logger.info("同步股票列表（从 Baostock 获取全部A股）...")
+        
+        # 从 Baostock 获取全部股票列表
+        rs = bs.query_stock_basic()
+        
+        if rs.error_code != '0':
+            logger.error(f"获取股票列表失败: {rs.error_msg}")
+            return {'success': False, 'error': rs.error_msg}
+        
+        count = 0
+        while rs.next():
+            row = rs.get_row_data()
+            # 过滤：只保留 A 股（sh./sz. 开头）
+            code = row[0]
+            if code and (code.startswith('sh.') or code.startswith('sz.')):
+                # 转换为标准格式
+                if code.startswith('sh.'):
+                    sec_code = code.replace('sh.', '') + '.SH'
+                else:
+                    sec_code = code.replace('sz.', '') + '.SZ'
+                
+                try:
+                    self.db.conn.execute("""
+                        INSERT OR REPLACE INTO stock_list VALUES (?, ?, ?)
+                    """, [sec_code, row[1], datetime.now()])
+                    count += 1
+                except:
+                    pass
+        
         self.db.conn.commit()
-        logger.info(f"股票列表同步完成: {len(codes)} 条")
-        return {'success': True, 'record_count': len(codes)}
+        logger.info(f"股票列表同步完成: {count} 条")
+        return {'success': True, 'record_count': count}
 
     def sync_daily_kline(self, sec_code: str = None, force: bool = False) -> dict:
         if sec_code:
