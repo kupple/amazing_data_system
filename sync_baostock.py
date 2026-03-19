@@ -13,50 +13,39 @@ from src.collectors.baostock.client import BaostockClient
 import time
 
 def main():
-    # 使用绝对路径
-    db_path = r'C:\Users\mubin\Desktop\amazing_data_system\data\baostock_data.duckdb'
+    # 使用 baostock_full.duckdb
+    db_path = r'C:\Users\mubin\Desktop\amazing_data_system\data\baostock_full.duckdb'
     
     client = BaostockClient(db_path=db_path)
     client.connect()
     
-    # 同步股票列表
-    print('=== 同步股票列表 ===')
-    result = client.sync_stock_list()
-    print(result)
+    # 同步股票列表（如果需要）
+    # result = client.sync_stock_list()
     
     # 获取全部股票
     all_codes = client.get_all_codes()
     print(f'总股票: {len(all_codes)}')
     
-    # 过滤只保留常规A股
-    def is_regular_a_share(code):
-        if code.startswith('600') or code.startswith('601') or code.startswith('603') or code.startswith('605'):
-            return True
-        if code.startswith('688') or code.startswith('689'):
-            return True
-        if code.startswith('000') and len(code) == 7:
-            return True
-        if code.startswith('001') and len(code) == 7:
-            return True
-        if code.startswith('002') and len(code) == 7:
-            return True
-        return False
+    # 获取已同步的股票
+    synced = set([r[0] for r in client.db.conn.execute('SELECT sec_code FROM daily_kline').fetchall()])
     
-    regular_a = [c for c in all_codes if is_regular_a_share(c)]
-    print(f'常规A股: {len(regular_a)}')
+    # 过滤未同步的
+    codes = [c for c in all_codes if c not in synced]
+    print(f'已同步: {len(synced)}')
+    print(f'待同步: {len(codes)}')
     
-    # 同步日线（后复权+全部字段）
-    print('开始同步全部历史数据（后复权）...')
+    # 增量同步（force=False）
+    print('开始增量同步...')
     total = 0
     start = time.time()
-    for i, code in enumerate(regular_a):
-        result = client.sync_daily_kline(code, force=True)
+    for i, code in enumerate(codes):
+        result = client.sync_daily_kline(code, force=False)  # 增量同步
         total += result.get('record_count', 0)
         if (i + 1) % 100 == 0:
             elapsed = time.time() - start
             rate = (i + 1) / elapsed * 60
-            remaining = (len(regular_a) - i - 1) / rate
-            print(f'进度: {i+1}/{len(regular_a)}, 累计: {total}条, 预计剩余: {remaining:.0f}分钟')
+            remaining = (len(codes) - i - 1) / rate
+            print(f'进度: {i+1}/{len(codes)}, 累计: {total}条, 预计剩余: {remaining:.0f}分钟')
     
     print(f'完成! 总耗时: {(time.time()-start)/60:.1f}分钟')
     print('最终状态:', client.get_sync_status())

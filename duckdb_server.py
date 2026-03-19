@@ -1,23 +1,54 @@
-# start_bv.py
+"""
+DuckDB Server - 简单的 HTTP 服务器提供数据库查询
+"""
 import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import duckdb
 from pathlib import Path
-from buenavista.adapter.duckdb import DuckDBAdapter
-from buenavista.http import create_app
+import os
 
-# 1. 指定主数据库（服务启动时默认连接的库）
-adapter = DuckDBAdapter(":memory:")
+app = FastAPI(title="DuckDB Server")
 
-# 2. 自动扫描 data 目录下所有 .duckdb 文件并挂载
-data_dir = Path("data")
-if data_dir.exists():
-    for db_file in data_dir.glob("*.duckdb"):
-        alias = db_file.stem  # 文件名去掉后缀作为别名
-        adapter.execute(f"ATTACH '{db_file}' AS {alias}")
-        print(f"Attached {db_file} as {alias}")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# 3. 创建并运行服务
-app = create_app(adapter)
+# 数据目录
+DATA_DIR = Path("data")
+
+# 挂载所有数据库
+databases = {}
+if DATA_DIR.exists():
+    for db_file in DATA_DIR.glob("*.duckdb"):
+        alias = db_file.stem
+        databases[alias] = str(db_file)
+        print(f"Loaded {alias}: {db_file}")
+
+
+@app.get("/")
+async def root():
+    return {"databases": list(databases.keys())}
+
+
+@app.get("/query/{db}")
+async def query(db: str, sql: str):
+    """执行 SQL 查询"""
+    if db not in databases:
+        raise HTTPException(status_code=404, detail=f"Database {db} not found")
+    
+    try:
+        conn = duckdb.connect(databases[db], read_only=True)
+        result = conn.execute(sql).fetchall()
+        conn.close()
+        return {"data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
-    # 监听本地 5433 端口
     uvicorn.run(app, host="0.0.0.0", port=5433)
