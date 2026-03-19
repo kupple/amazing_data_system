@@ -8,14 +8,13 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.collectors.baostock.client import BaostockClient
-import psycopg2
 import time
 
 
 def main():
-    dsn = "host=localhost port=5433 dbname=main"
+    db_path = "./data/baostock_full.duckdb"
 
-    client = BaostockClient(dsn=dsn)
+    client = BaostockClient(db_path=db_path)
     client.connect()
 
     # 获取全部股票
@@ -23,10 +22,7 @@ def main():
     print(f'总股票: {len(all_codes)}')
 
     # 获取已同步的股票
-    cur = client.conn.cursor()
-    cur.execute('SELECT DISTINCT sec_code FROM daily_kline')
-    synced = set([r[0] for r in cur.fetchall()])
-    cur.close()
+    synced = set([r[0] for r in client.db.conn.execute('SELECT DISTINCT sec_code FROM daily_kline').fetchall()])
 
     # 过滤未同步的
     codes = [c for c in all_codes if c not in synced]

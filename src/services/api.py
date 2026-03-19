@@ -7,16 +7,15 @@ from fastapi import FastAPI, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import pandas as pd
-import psycopg2
-import psycopg2.extras
+import duckdb
 
 from src.common.config import config
 from src.common.logger import logger
 from src.common.database import get_db, DuckDBManager
 from src.common.models import APIResponse, DataSource
 
-# Baostock psycopg2 连接配置
-BAOSTOCK_DSN = "host=0.0.0.0 port=5433 dbname=main"
+# Baostock 数据库路径
+BAOSTOCK_DB_PATH = "./data/baostock_full.duckdb"
 
 
 # 创建 FastAPI 应用
@@ -66,8 +65,8 @@ def get_database() -> DuckDBManager:
 
 
 def get_baostock_conn():
-    """获取 Baostock psycopg2 连接"""
-    conn = psycopg2.connect(BAOSTOCK_DSN)
+    """获取 Baostock duckdb 连接"""
+    conn = duckdb.connect(BAOSTOCK_DB_PATH, read_only=True)
     try:
         yield conn
     finally:
@@ -478,21 +477,15 @@ async def baostock_get_stocks(
 ):
     """获取 Baostock 股票列表"""
     try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         where = ""
         params = []
         if stock_type:
-            where = "WHERE stock_type = %s"
-            params.append(stock_type)
+            where = f"WHERE stock_type = '{stock_type}'"
 
-        cur.execute(f"SELECT COUNT(*) as cnt FROM stock_list {where}", params)
-        total = cur.fetchone()["cnt"]
+        total = conn.execute(f"SELECT COUNT(*) FROM stock_list {where}").fetchone()[0]
+        df = conn.execute(f"SELECT * FROM stock_list {where} LIMIT {limit} OFFSET {offset}").df()
 
-        cur.execute(f"SELECT * FROM stock_list {where} LIMIT %s OFFSET %s", params + [limit, offset])
-        rows = cur.fetchall()
-        cur.close()
-
-        return {"code": 200, "message": "success", "data": rows, "total": total, "page": offset // limit + 1, "page_size": limit}
+        return {"code": 200, "message": "success", "data": df.to_dict(orient="records"), "total": total, "page": offset // limit + 1, "page_size": limit}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -501,13 +494,10 @@ async def baostock_get_stocks(
 async def baostock_get_stock(sec_code: str, conn=Depends(get_baostock_conn)):
     """获取单个 Baostock 股票信息"""
     try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("SELECT * FROM stock_list WHERE sec_code = %s", (sec_code,))
-        row = cur.fetchone()
-        cur.close()
-        if not row:
+        df = conn.execute(f"SELECT * FROM stock_list WHERE sec_code = ?", [sec_code]).df()
+        if df.empty:
             raise HTTPException(status_code=404, detail=f"股票 {sec_code} 不存在")
-        return {"code": 200, "message": "success", "data": row}
+        return {"code": 200, "message": "success", "data": df.to_dict(orient="records")[0]}
     except HTTPException:
         raise
     except Exception as e:
@@ -525,24 +515,16 @@ async def baostock_get_kline(
 ):
     """获取 Baostock 日线数据"""
     try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        where = "WHERE sec_code = %s"
-        params = [sec_code]
+        where = f"WHERE sec_code = '{sec_code}'"
         if start_date:
-            where += " AND trade_date >= %s"
-            params.append(start_date)
+            where += f" AND trade_date >= '{start_date}'"
         if end_date:
-            where += " AND trade_date <= %s"
-            params.append(end_date)
+            where += f" AND trade_date <= '{end_date}'"
 
-        cur.execute(f"SELECT COUNT(*) as cnt FROM daily_kline {where}", params)
-        total = cur.fetchone()["cnt"]
+        total = conn.execute(f"SELECT COUNT(*) FROM daily_kline {where}").fetchone()[0]
+        df = conn.execute(f"SELECT * FROM daily_kline {where} ORDER BY trade_date DESC LIMIT {limit} OFFSET {offset}").df()
 
-        cur.execute(f"SELECT * FROM daily_kline {where} ORDER BY trade_date DESC LIMIT %s OFFSET %s", params + [limit, offset])
-        rows = cur.fetchall()
-        cur.close()
-
-        return {"code": 200, "message": "success", "data": rows, "total": total, "page": offset // limit + 1, "page_size": limit}
+        return {"code": 200, "message": "success", "data": df.to_dict(orient="records"), "total": total, "page": offset // limit + 1, "page_size": limit}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -551,20 +533,13 @@ async def baostock_get_kline(
 async def baostock_get_stats(conn=Depends(get_baostock_conn)):
     """获取 Baostock 统计信息"""
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM stock_list")
-        stock_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM daily_kline")
-        kline_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(DISTINCT sec_code) FROM daily_kline")
-        kline_stock_count = cur.fetchone()[0]
-        cur.execute("SELECT MAX(trade_date) FROM daily_kline")
-        max_date = cur.fetchone()[0]
-        cur.close()
+        stock_count = conn.execute("SELECT COUNT(*) FROM stock_list").fetchone()[0]
+        kline_count = conn.execute("SELECT COUNT(*) FROM daily_kline").fetchone()[0]
+        kline_stock_count = conn.execute("SELECT COUNT(DISTINCT sec_code) FROM daily_kline").fetchone()[0]
+        max_date = conn.execute("SELECT MAX(trade_date) FROM daily_kline").fetchone()[0]
 
         return {
-            "code": 200,
-            "message": "success",
+            "code": 200, "message": "success",
             "data": {
                 "stock_count": stock_count,
                 "kline_count": kline_count,
@@ -580,16 +555,12 @@ async def baostock_get_stats(conn=Depends(get_baostock_conn)):
 async def baostock_get_tables(conn=Depends(get_baostock_conn)):
     """获取 Baostock 所有表"""
     try:
-        cur = conn.cursor()
-        cur.execute("SHOW TABLES")
-        tables = cur.fetchall()
+        tables = conn.execute("SHOW TABLES").fetchall()
         table_list = []
         for t in tables:
             name = t[0]
-            cur.execute(f"SELECT COUNT(*) FROM {name}")
-            count = cur.fetchone()[0]
+            count = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
             table_list.append({"name": name, "count": count})
-        cur.close()
         return {"code": 200, "message": "success", "data": table_list}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
