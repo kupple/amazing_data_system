@@ -15,7 +15,7 @@ from src.collectors import BaseCollector
 class BaostockClient(BaseCollector):
     """Baostock 客户端"""
 
-    def __init__(self, db_path: str = "./data/baostock_data.duckdb"):
+    def __init__(self, db_path: str = "C:/Users/mubin/Desktop/amazing_data_system/data/baostock_data.duckdb"):
         super().__init__("baostock")
         self._last_request_time = 0
         self._min_request_interval = 0.5
@@ -64,6 +64,10 @@ class BaostockClient(BaseCollector):
             CREATE TABLE IF NOT EXISTS stock_list (
                 sec_code VARCHAR PRIMARY KEY,
                 code_name VARCHAR,
+                ipo_date DATE,
+                out_date DATE,
+                stock_type VARCHAR,
+                trade_status VARCHAR,
                 update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -79,8 +83,24 @@ class BaostockClient(BaseCollector):
                 volume BIGINT,
                 amount DOUBLE,
                 pct_chg DOUBLE,
+                turn DOUBLE,
+                trade_status VARCHAR,
+                is_st VARCHAR,
                 update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(sec_code, trade_date)
+            )
+        """)
+        
+        # 同步日志表
+        self._db.conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_log (
+                id INTEGER PRIMARY KEY,
+                sec_code VARCHAR,
+                data_type VARCHAR,
+                success INTEGER,
+                record_count INTEGER,
+                error_message TEXT,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
@@ -138,8 +158,18 @@ class BaostockClient(BaseCollector):
                 
                 try:
                     self.db.conn.execute("""
-                        INSERT OR REPLACE INTO stock_list VALUES (?, ?, ?)
-                    """, [sec_code, row[1], datetime.now()])
+                        INSERT OR REPLACE INTO stock_list 
+                        (sec_code, code_name, ipo_date, out_date, stock_type, trade_status, update_time)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, [
+                        sec_code, 
+                        row[1],  # code_name
+                        row[2] if row[2] else None,  # ipoDate
+                        row[3] if row[3] else None,  # outDate
+                        row[4],  # type
+                        row[5],  # status
+                        datetime.now()
+                    ])
                     count += 1
                 except:
                     pass
@@ -192,14 +222,15 @@ class BaostockClient(BaseCollector):
                 
                 self._wait_rate_limit()
                 
-                # 查询数据 (adjustflag=2 是前复权, 1是后复权)
+                # 查询数据 (adjustflag=1 是后复权, 2是前复权)
+                # 获取全部字段
                 rs = bs.query_history_k_data_plus(
                     code=bs_code,
-                    fields='date,open,high,low,close,volume,amount,pctChg',
+                    fields='date,open,high,low,close,volume,amount,pctChg,turn,tradestatus,isST',
                     start_date=start_date,
                     end_date=end_date,
                     frequency='d',
-                    adjustflag='2'  # 2=前复权
+                    adjustflag='1'  # 1=后复权
                 )
                 
                 if rs.error_code != '0':
@@ -213,8 +244,8 @@ class BaostockClient(BaseCollector):
                         try:
                             self.db.conn.execute("""
                                 INSERT OR IGNORE INTO daily_kline 
-                                (sec_code, trade_date, open, high, low, close, volume, amount, pct_chg, update_time)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                (sec_code, trade_date, open, high, low, close, volume, amount, pct_chg, turn, trade_status, is_st, update_time)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """, [
                                 code, row[0],
                                 float(row[1]) if row[1] else None,
@@ -224,6 +255,9 @@ class BaostockClient(BaseCollector):
                                 int(float(row[5])) if row[5] else 0,
                                 float(row[6]) if row[6] else None,
                                 float(row[7]) if row[7] else None,
+                                float(row[8]) if row[8] else None,  # turn
+                                row[9] if len(row) > 9 else None,   # trade_status
+                                row[10] if len(row) > 10 else None, # isST
                                 datetime.now()
                             ])
                             count += 1
@@ -233,10 +267,24 @@ class BaostockClient(BaseCollector):
                 self.db.conn.commit()
                 total_count += count
                 success_count += 1
+                
+                # 记录成功日志
+                self.db.conn.execute("""
+                    INSERT INTO sync_log (id, sec_code, data_type, success, record_count, error_message, update_time)
+                    VALUES (NULL, ?, ?, ?, ?, ?, ?)
+                """, [code, 'daily_kline', 1, count, '', datetime.now()])
+                self.db.conn.commit()
+                
                 logger.debug(f"{code}: {count} 条")
                 
             except Exception as e:
                 logger.debug(f"{code} 异常: {e}")
+                # 记录失败日志
+                self.db.conn.execute("""
+                    INSERT INTO sync_log (id, sec_code, data_type, success, record_count, error_message, update_time)
+                    VALUES (NULL, ?, ?, ?, ?, ?, ?)
+                """, [code, 'daily_kline', 0, 0, str(e), datetime.now()])
+                self.db.conn.commit()
         
         logger.info(f"日线同步完成: {success_count}/{len(codes)} 只, {total_count} 条")
         return {'success': True, 'record_count': total_count, 'success_count': success_count}
