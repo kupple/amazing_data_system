@@ -1,6 +1,10 @@
-# start_bv.py
-import os
+"""
+DuckDB Server - 简单的 HTTP 服务器提供数据库查询
+"""
 import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import duckdb
 from pathlib import Path
 from dotenv import load_dotenv
 from buenavista.adapter.duckdb import DuckDBAdapter
