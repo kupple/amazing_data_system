@@ -1,44 +1,23 @@
-"""
-DuckDB Server - 使用 checkpoint 方式
-"""
-import duckdb
-import threading
-import time
+# start_bv.py
+import uvicorn
+from pathlib import Path
+from buenavista.adapter.duckdb import DuckDBAdapter
+from buenavista.http import create_app
 
-class DuckDBServer:
-    def __init__(self, db_path):
-        self.db_path = db_path
-        self.conn = duckdb.connect(db_path, read_only=False)
-        self.running = True
-        self.checkpoint_interval = 30  # 每30秒checkpoint一次
-        
-    def checkpoint(self):
-        """定期checkpoint"""
-        while self.running:
-            try:
-                self.conn.execute("CHECKPOINT;")
-                print(f"[{time.strftime('%H:%M:%S')}] Checkpoint done")
-            except Exception as e:
-                print(f"Checkpoint error: {e}")
-            time.sleep(self.checkpoint_interval)
-    
-    def run(self):
-        print(f"DuckDB Server running on: {self.db_path}")
-        print("Press Ctrl+C to stop")
-        
-        # 启动 checkpoint 线程
-        checkpoint_thread = threading.Thread(target=self.checkpoint, daemon=True)
-        checkpoint_thread.start()
-        
-        # 保持运行
-        try:
-            while self.running:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            self.running = False
-            self.conn.close()
-            print("Server stopped")
+# 1. 指定主数据库（服务启动时默认连接的库）
+adapter = DuckDBAdapter(":memory:")
+
+# 2. 自动扫描 data 目录下所有 .duckdb 文件并挂载
+data_dir = Path("data")
+if data_dir.exists():
+    for db_file in data_dir.glob("*.duckdb"):
+        alias = db_file.stem  # 文件名去掉后缀作为别名
+        adapter.execute(f"ATTACH '{db_file}' AS {alias}")
+        print(f"Attached {db_file} as {alias}")
+
+# 3. 创建并运行服务
+app = create_app(adapter)
 
 if __name__ == "__main__":
-    server = DuckDBServer("C:\\Users\\mubin\\.openclaw\\workspace\\data\\baostock_full.duckdb")
-    server.run()
+    # 监听本地 5433 端口
+    uvicorn.run(app, host="0.0.0.0", port=5433)
