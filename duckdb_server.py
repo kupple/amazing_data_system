@@ -1,23 +1,37 @@
 # start_bv.py
+import os
 import uvicorn
 from pathlib import Path
+from dotenv import load_dotenv
 from buenavista.adapter.duckdb import DuckDBAdapter
 from buenavista.http import create_app
 
-# 1. 指定主数据库（服务启动时默认连接的库）
+load_dotenv()
+
+# 1. 从 .env 读取配置
+data_dir = Path(os.getenv("DUCKDB_DATA_DIR", "./data"))
+db_files = os.getenv("DUCKDB_FILES", "").split(",")
+host = os.getenv("DUCKDB_SERVER_HOST", "0.0.0.0")
+port = int(os.getenv("DUCKDB_SERVER_PORT", "5433"))
+
+# 2. 创建内存主库
 adapter = DuckDBAdapter(":memory:")
 
-# 2. 自动扫描 data 目录下所有 .duckdb 文件并挂载
-data_dir = Path("data")
-if data_dir.exists():
-    for db_file in data_dir.glob("*.duckdb"):
-        alias = db_file.stem  # 文件名去掉后缀作为别名
+# 3. 挂载 .env 中指定的 duckdb 文件
+for name in db_files:
+    name = name.strip()
+    if not name:
+        continue
+    db_file = data_dir / name
+    if db_file.exists():
+        alias = db_file.stem
         adapter.execute(f"ATTACH '{db_file}' AS {alias}")
         print(f"Attached {db_file} as {alias}")
+    else:
+        print(f"Warning: {db_file} not found, skipped")
 
-# 3. 创建并运行服务
+# 4. 创建并运行服务
 app = create_app(adapter)
 
 if __name__ == "__main__":
-    # 监听本地 5433 端口
-    uvicorn.run(app, host="0.0.0.0", port=5433)
+    uvicorn.run(app, host=host, port=port)

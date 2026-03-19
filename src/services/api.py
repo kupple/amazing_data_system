@@ -7,12 +7,16 @@ from fastapi import FastAPI, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import pandas as pd
-import duckdb
+import psycopg2
+import psycopg2.extras
 
 from src.common.config import config
 from src.common.logger import logger
 from src.common.database import get_db, DuckDBManager
 from src.common.models import APIResponse, DataSource
+
+# Baostock psycopg2 连接配置
+BAOSTOCK_DSN = "host=0.0.0.0 port=5433 dbname=main"
 
 
 # 创建 FastAPI 应用
@@ -59,6 +63,15 @@ class DataResponse(BaseModel):
 def get_database() -> DuckDBManager:
     """获取数据库实例"""
     return get_db()
+
+
+def get_baostock_conn():
+    """获取 Baostock psycopg2 连接"""
+    conn = psycopg2.connect(BAOSTOCK_DSN)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 # ==================== 根路径 ====================
@@ -451,6 +464,134 @@ async def get_kline(
         raise
     except Exception as e:
         logger.error(f"获取K线失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Baostock 数据接口 ====================
+
+@app.get("/api/baostock/stocks")
+async def baostock_get_stocks(
+    stock_type: Optional[str] = Query(None, description="股票类型: 1=A股, 2=B股"),
+    limit: int = Query(100, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+    conn=Depends(get_baostock_conn)
+):
+    """获取 Baostock 股票列表"""
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        where = ""
+        params = []
+        if stock_type:
+            where = "WHERE stock_type = %s"
+            params.append(stock_type)
+
+        cur.execute(f"SELECT COUNT(*) as cnt FROM stock_list {where}", params)
+        total = cur.fetchone()["cnt"]
+
+        cur.execute(f"SELECT * FROM stock_list {where} LIMIT %s OFFSET %s", params + [limit, offset])
+        rows = cur.fetchall()
+        cur.close()
+
+        return {"code": 200, "message": "success", "data": rows, "total": total, "page": offset // limit + 1, "page_size": limit}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/baostock/stocks/{sec_code}")
+async def baostock_get_stock(sec_code: str, conn=Depends(get_baostock_conn)):
+    """获取单个 Baostock 股票信息"""
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM stock_list WHERE sec_code = %s", (sec_code,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"股票 {sec_code} 不存在")
+        return {"code": 200, "message": "success", "data": row}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/baostock/kline/{sec_code}")
+async def baostock_get_kline(
+    sec_code: str,
+    start_date: Optional[str] = Query(None, description="开始日期: YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期: YYYY-MM-DD"),
+    limit: int = Query(100, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
+    conn=Depends(get_baostock_conn)
+):
+    """获取 Baostock 日线数据"""
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        where = "WHERE sec_code = %s"
+        params = [sec_code]
+        if start_date:
+            where += " AND trade_date >= %s"
+            params.append(start_date)
+        if end_date:
+            where += " AND trade_date <= %s"
+            params.append(end_date)
+
+        cur.execute(f"SELECT COUNT(*) as cnt FROM daily_kline {where}", params)
+        total = cur.fetchone()["cnt"]
+
+        cur.execute(f"SELECT * FROM daily_kline {where} ORDER BY trade_date DESC LIMIT %s OFFSET %s", params + [limit, offset])
+        rows = cur.fetchall()
+        cur.close()
+
+        return {"code": 200, "message": "success", "data": rows, "total": total, "page": offset // limit + 1, "page_size": limit}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/baostock/stats")
+async def baostock_get_stats(conn=Depends(get_baostock_conn)):
+    """获取 Baostock 统计信息"""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM stock_list")
+        stock_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM daily_kline")
+        kline_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(DISTINCT sec_code) FROM daily_kline")
+        kline_stock_count = cur.fetchone()[0]
+        cur.execute("SELECT MAX(trade_date) FROM daily_kline")
+        max_date = cur.fetchone()[0]
+        cur.close()
+
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "stock_count": stock_count,
+                "kline_count": kline_count,
+                "kline_stock_count": kline_stock_count,
+                "max_date": str(max_date) if max_date else None
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/baostock/tables")
+async def baostock_get_tables(conn=Depends(get_baostock_conn)):
+    """获取 Baostock 所有表"""
+    try:
+        cur = conn.cursor()
+        cur.execute("SHOW TABLES")
+        tables = cur.fetchall()
+        table_list = []
+        for t in tables:
+            name = t[0]
+            cur.execute(f"SELECT COUNT(*) FROM {name}")
+            count = cur.fetchone()[0]
+            table_list.append({"name": name, "count": count})
+        cur.close()
+        return {"code": 200, "message": "success", "data": table_list}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
