@@ -12,7 +12,7 @@ import time
 
 
 def main():
-    db_path = "./data/baostock_full.duckdb"
+    db_path = "./data/baostock_data.duckdb"
 
     client = BaostockClient(db_path=db_path)
     client.connect()

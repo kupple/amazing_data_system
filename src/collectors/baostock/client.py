@@ -15,7 +15,7 @@ from src.collectors import BaseCollector
 class BaostockClient(BaseCollector):
     """Baostock 客户端"""
 
-    def __init__(self, db_path: str = "./data/baostock_full.duckdb"):
+    def __init__(self, db_path: str = "./data/baostock_data.duckdb"):
         super().__init__("baostock")
         self._last_request_time = 0
         self._min_request_interval = 0.5
@@ -88,17 +88,6 @@ class BaostockClient(BaseCollector):
                 UNIQUE(sec_code, trade_date)
             )
         """)
-        self._db.conn.execute("""
-            CREATE TABLE IF NOT EXISTS sync_log (
-                id INTEGER PRIMARY KEY,
-                sec_code VARCHAR,
-                data_type VARCHAR,
-                success INTEGER,
-                record_count INTEGER,
-                error_message TEXT,
-                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
         self._db.conn.execute("CREATE INDEX IF NOT EXISTS idx_kline_code ON daily_kline(sec_code)")
         self._db.conn.execute("CREATE INDEX IF NOT EXISTS idx_kline_date ON daily_kline(trade_date)")
         self._db.conn.commit()
@@ -117,11 +106,11 @@ class BaostockClient(BaseCollector):
 
     def get_all_codes(self) -> List[str]:
         try:
-            result = self.db.conn.execute("SELECT sec_code FROM stock_list").fetchall()
+            result = self.db.conn.execute("SELECT sec_code FROM stock_list where stock_type = '1'").fetchall()
+            print(result)
             codes = [r[0] for r in result]
             if not codes:
-                return ['600000.SH', '600036.SH', '600519.SH', '000001.SH', '000002.SH',
-                        '000333.SH', '000651.SH', '000858.SH', '300750.SH', '688111.SH']
+                return []
             return codes
         except:
             return ['600000.SH', '600036.SH', '600519.SH', '000001.SH', '000002.SH']
@@ -221,20 +210,11 @@ class BaostockClient(BaseCollector):
                 self.db.conn.commit()
                 total_count += count
                 success_count += 1
-                self.db.conn.execute("""
-                    INSERT INTO sync_log (id, sec_code, data_type, success, record_count, error_message, update_time)
-                    VALUES (NULL, ?, ?, ?, ?, ?, ?)
-                """, [code, 'daily_kline', 1, count, '', datetime.now()])
-                self.db.conn.commit()
                 logger.debug(f"{code}: {count} 条")
 
             except Exception as e:
                 logger.debug(f"{code} 异常: {e}")
-                self.db.conn.execute("""
-                    INSERT INTO sync_log (id, sec_code, data_type, success, record_count, error_message, update_time)
-                    VALUES (NULL, ?, ?, ?, ?, ?, ?)
-                """, [code, 'daily_kline', 0, 0, str(e), datetime.now()])
-                self.db.conn.commit()
+                # Skip sync_log for now
 
         logger.info(f"日线同步完成: {success_count}/{len(codes)} 只, {total_count} 条")
         return {'success': True, 'record_count': total_count, 'success_count': success_count}
