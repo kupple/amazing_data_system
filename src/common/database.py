@@ -1,30 +1,40 @@
 """
-DuckDB 数据库模块
+ClickHouse 数据库模块
 """
 import os
 import json
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
-import duckdb
+import clickhouse_connect
 import pandas as pd
 from src.common.config import config
 from src.common.logger import logger
 from src.common.models import DataSource
 
 
-class DuckDBManager:
-    """DuckDB 数据库管理器"""
+class ClickHouseManager:
+    """ClickHouse 数据库管理器"""
     
-    def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or config.database.db_path
-        
-        # 确保目录存在
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, host: Optional[str] = None, port: Optional[int] = None,
+                 database: Optional[str] = None, username: Optional[str] = None,
+                 password: Optional[str] = None):
+        self.host = host or config.database.host
+        self.port = port or config.database.port
+        self.database = database or config.database.database
+        self.username = username or config.database.username
+        self.password = password or config.database.password
         
         # 连接数据库
-        self.conn = duckdb.connect(self.db_path)
-        self.conn.execute("PRAGMA threads=4")
+        self.client = clickhouse_connect.get_client(
+            host=self.host,
+            port=self.port,
+            username=self.username,
+            password=self.password,
+            database=self.database
+        )
+        
+        logger.info(f"已连接到 ClickHouse: {self.host}:{self.port}/{self.database}")
         
         # 初始化表结构
         self._init_tables()
@@ -32,66 +42,53 @@ class DuckDBManager:
     def _init_tables(self):
         """初始化表结构"""
         # 数据获取记录表
-        self.conn.execute("""
-            CREATE SEQUENCE IF NOT EXISTS fetch_records_id_seq
-        """)
-        self.conn.execute("""
+        self.client.command("""
             CREATE TABLE IF NOT EXISTS fetch_records (
-                id INTEGER PRIMARY KEY DEFAULT NEXTVAL('fetch_records_id_seq'),
-                data_type VARCHAR NOT NULL,
-                fetch_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                success BOOLEAN DEFAULT FALSE,
-                record_count INTEGER DEFAULT 0,
-                error_message VARCHAR,
-                retry_count INTEGER DEFAULT 0,
-                start_date VARCHAR,
-                end_date VARCHAR
-            )
+                id UInt64,
+                data_type String,
+                fetch_time DateTime DEFAULT now(),
+                success UInt8 DEFAULT 0,
+                record_count UInt32 DEFAULT 0,
+                error_message Nullable(String),
+                retry_count UInt32 DEFAULT 0,
+                start_date Nullable(String),
+                end_date Nullable(String)
+            ) ENGINE = MergeTree()
+            ORDER BY (data_type, fetch_time)
         """)
         
         # 同步状态表
-        self.conn.execute("""
+        self.client.command("""
             CREATE TABLE IF NOT EXISTS sync_status (
-                data_type VARCHAR PRIMARY KEY,
-                last_sync_time TIMESTAMP,
-                last_success_time TIMESTAMP,
-                record_count INTEGER DEFAULT 0,
-                status VARCHAR DEFAULT 'pending',
-                error_message VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+                data_type String,
+                last_sync_time Nullable(DateTime),
+                last_success_time Nullable(DateTime),
+                record_count UInt32 DEFAULT 0,
+                status String DEFAULT 'pending',
+                error_message Nullable(String),
+                created_at DateTime DEFAULT now(),
+                updated_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(updated_at)
+            ORDER BY data_type
         """)
         
         # 每日数据汇总表
-        self.conn.execute("""
+        self.client.command("""
             CREATE TABLE IF NOT EXISTS daily_summary (
-                date VARCHAR NOT NULL,
-                data_type VARCHAR NOT NULL,
-                success_count INTEGER DEFAULT 0,
-                failed_count INTEGER DEFAULT 0,
-                total_records INTEGER DEFAULT 0,
-                PRIMARY KEY (date, data_type)
-            )
-        """)
-        
-        # 创建索引
-        self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_fetch_records_type 
-            ON fetch_records(data_type)
-        """)
-        self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_fetch_records_time 
-            ON fetch_records(fetch_time)
+                date String,
+                data_type String,
+                success_count UInt32 DEFAULT 0,
+                failed_count UInt32 DEFAULT 0,
+                total_records UInt32 DEFAULT 0
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY (date, data_type)
         """)
         
         logger.info("数据库表结构初始化完成")
     
-    def execute(self, query: str, params: Optional[dict] = None) -> duckdb.DuckDBPyConnection:
+    def execute(self, query: str, parameters: Optional[dict] = None):
         """执行 SQL"""
-        if params:
-            return self.conn.execute(query, params)
-        return self.conn.execute(query)
+        return self.client.command(query, parameters=parameters)
     
     def insert_dataframe(self, df: pd.DataFrame, table_name: str, 
                         if_exists: str = "append", unique_keys: Optional[List[str]] = None):
@@ -108,29 +105,66 @@ class DuckDBManager:
             logger.warning(f"DataFrame 为空，跳过插入 {table_name}")
             return
         
-        temp_view_name = f"temp_{table_name}_{id(df)}"
-        self.conn.execute(f"CREATE OR REPLACE VIEW {temp_view_name} AS SELECT * FROM df")
-        
         if not self.table_exists(table_name):
-            self.conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM {temp_view_name}")
-            logger.info(f"创建表 {table_name}，插入 {len(df)} 条记录")
-        else:
-            if unique_keys and if_exists == "append":
-                # 增量插入，去重
-                keys_str = ", ".join(unique_keys)
-                self.conn.execute(f"""
-                    INSERT INTO {table_name}
-                    SELECT * FROM {temp_view_name}
-                    WHERE ({keys_str}) NOT IN (
-                        SELECT {keys_str} FROM {table_name}
-                    )
-                """)
-                logger.info(f"增量插入到 {table_name}（去重）")
-            else:
-                self.conn.execute(f"INSERT INTO {table_name} SELECT * FROM {temp_view_name}")
-                logger.info(f"插入 {len(df)} 条记录到 {table_name}")
+            # 自动创建表
+            self._create_table_from_df(df, table_name)
+            logger.info(f"创建表 {table_name}")
         
-        self.conn.execute(f"DROP VIEW {temp_view_name}")
+        if unique_keys and if_exists == "append":
+            # 增量插入，去重
+            existing_keys = self._get_existing_keys(table_name, unique_keys)
+            
+            # 过滤掉已存在的记录
+            if existing_keys:
+                mask = ~df[unique_keys].apply(tuple, axis=1).isin(existing_keys)
+                df = df[mask]
+            
+            if df.empty:
+                logger.info(f"{table_name} 无新数据需要插入")
+                return
+        
+        # 插入数据
+        self.client.insert_df(table_name, df)
+        logger.info(f"插入 {len(df)} 条记录到 {table_name}")
+    
+    def _create_table_from_df(self, df: pd.DataFrame, table_name: str):
+        """从 DataFrame 自动创建表"""
+        type_mapping = {
+            'int64': 'Int64',
+            'int32': 'Int32',
+            'float64': 'Float64',
+            'float32': 'Float32',
+            'object': 'String',
+            'bool': 'UInt8',
+            'datetime64[ns]': 'DateTime'
+        }
+        
+        columns = []
+        for col, dtype in df.dtypes.items():
+            ch_type = type_mapping.get(str(dtype), 'String')
+            columns.append(f"`{col}` {ch_type}")
+        
+        columns_str = ", ".join(columns)
+        
+        # 使用第一列作为排序键
+        order_by = df.columns[0]
+        
+        create_sql = f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                {columns_str}
+            ) ENGINE = MergeTree()
+            ORDER BY `{order_by}`
+        """
+        
+        self.client.command(create_sql)
+    
+    def _get_existing_keys(self, table_name: str, key_columns: List[str]) -> set:
+        """获取表中已存在的键"""
+        keys_str = ", ".join([f"`{col}`" for col in key_columns])
+        query = f"SELECT DISTINCT {keys_str} FROM {table_name}"
+        
+        result = self.client.query(query)
+        return set(tuple(row) for row in result.result_rows)
     
     def insert_records(self, table_name: str, records: List[Dict[str, Any]]):
         """插入多条记录"""
@@ -140,28 +174,27 @@ class DuckDBManager:
         df = pd.DataFrame(records)
         self.insert_dataframe(df, table_name)
     
-    def query(self, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+    def query(self, sql: str, parameters: Optional[dict] = None) -> pd.DataFrame:
         """查询数据返回 DataFrame"""
-        if params:
-            result = self.conn.execute(sql, params).df()
-        else:
-            result = self.conn.execute(sql).df()
+        result = self.client.query_df(sql, parameters=parameters)
         return result
     
-    def query_json(self, sql: str, params: Optional[dict] = None) -> List[Dict]:
+    def query_json(self, sql: str, parameters: Optional[dict] = None) -> List[Dict]:
         """查询数据返回 JSON"""
-        df = self.query(sql, params)
+        df = self.query(sql, parameters)
         return df.to_dict(orient='records')
     
     def get_latest_date(self, table_name: str, date_column: str = "trade_date") -> Optional[str]:
         """获取表中最新的日期"""
         try:
-            result = self.conn.execute(f"""
-                SELECT MAX({date_column}) as max_date 
+            result = self.client.query(f"""
+                SELECT MAX(`{date_column}`) as max_date 
                 FROM {table_name}
-            """).fetchone()
+            """)
             
-            return result[0] if result and result[0] else None
+            if result.result_rows and result.result_rows[0][0]:
+                return str(result.result_rows[0][0])
+            return None
         except Exception as e:
             logger.warning(f"获取最新日期失败: {e}")
             return None
@@ -169,28 +202,26 @@ class DuckDBManager:
     def get_table_count(self, table_name: str) -> int:
         """获取表记录数"""
         try:
-            result = self.conn.execute(f"""
-                SELECT COUNT(*) FROM {table_name}
-            """).fetchone()
-            return result[0] if result else 0
+            result = self.client.query(f"SELECT COUNT(*) FROM {table_name}")
+            return result.result_rows[0][0] if result.result_rows else 0
         except:
             return 0
     
     def table_exists(self, table_name: str) -> bool:
         """检查表是否存在"""
-        result = self.conn.execute(f"""
-            SELECT COUNT(*) FROM information_schema.tables 
-            WHERE table_name = '{table_name}'
-        """).fetchone()
-        return result[0] > 0 if result else False
+        result = self.client.query(f"""
+            SELECT count() FROM system.tables 
+            WHERE database = '{self.database}' AND name = '{table_name}'
+        """)
+        return result.result_rows[0][0] > 0 if result.result_rows else False
     
     def get_tables(self) -> List[str]:
         """获取所有表"""
-        result = self.conn.execute("""
-            SELECT table_name FROM information_schema.tables 
-            WHERE table_schema = 'main'
-        """).fetchall()
-        return [r[0] for r in result]
+        result = self.client.query(f"""
+            SELECT name FROM system.tables 
+            WHERE database = '{self.database}'
+        """)
+        return [row[0] for row in result.result_rows]
     
     def save_fetch_record(self, data_type: str, success: bool, 
                           record_count: int = 0, 
@@ -198,11 +229,17 @@ class DuckDBManager:
                           start_date: Optional[str] = None,
                           end_date: Optional[str] = None):
         """保存数据获取记录"""
-        self.conn.execute("""
-            INSERT INTO fetch_records (data_type, success, record_count, 
-                                        error_message, start_date, end_date)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, [data_type, success, record_count, error_message, start_date, end_date])
+        # 生成 ID
+        max_id_result = self.client.query("SELECT max(id) FROM fetch_records")
+        max_id = max_id_result.result_rows[0][0] if max_id_result.result_rows[0][0] else 0
+        new_id = max_id + 1
+        
+        self.client.insert('fetch_records', [[
+            new_id, data_type, datetime.now(), 1 if success else 0,
+            record_count, error_message, 0, start_date, end_date
+        ]], column_names=['id', 'data_type', 'fetch_time', 'success', 
+                         'record_count', 'error_message', 'retry_count', 
+                         'start_date', 'end_date'])
         
         # 更新同步状态
         self.update_sync_status(data_type, success, record_count, error_message)
@@ -214,47 +251,44 @@ class DuckDBManager:
         now = datetime.now()
         
         if success:
-            self.conn.execute(f"""
-                INSERT INTO sync_status (data_type, last_sync_time, last_success_time, 
-                                        record_count, status, updated_at)
-                VALUES (?, ?, ?, ?, 'success', ?)
-                ON CONFLICT(data_type) DO UPDATE SET
-                    last_sync_time = excluded.last_sync_time,
-                    last_success_time = excluded.last_success_time,
-                    record_count = excluded.record_count,
-                    status = excluded.status,
-                    updated_at = excluded.updated_at
-            """, [data_type, now, now, record_count, now])
+            self.client.insert('sync_status', [[
+                data_type, now, now, record_count, 'success', None, now, now
+            ]], column_names=['data_type', 'last_sync_time', 'last_success_time',
+                             'record_count', 'status', 'error_message', 
+                             'created_at', 'updated_at'])
         else:
-            self.conn.execute(f"""
-                INSERT INTO sync_status (data_type, last_sync_time, 
-                                        status, error_message, updated_at)
-                VALUES (?, ?, 'failed', ?, ?)
-                ON CONFLICT(data_type) DO UPDATE SET
-                    last_sync_time = excluded.last_sync_time,
-                    status = excluded.status,
-                    error_message = excluded.error_message,
-                    updated_at = excluded.updated_at
-            """, [data_type, now, error_message, now])
+            self.client.insert('sync_status', [[
+                data_type, now, None, record_count, 'failed', error_message, now, now
+            ]], column_names=['data_type', 'last_sync_time', 'last_success_time',
+                             'record_count', 'status', 'error_message', 
+                             'created_at', 'updated_at'])
     
     def get_sync_status(self, data_type: Optional[str] = None) -> Union[List[Dict], Dict]:
         """获取同步状态"""
         if data_type:
-            result = self.conn.execute(f"""
-                SELECT * FROM sync_status WHERE data_type = '{data_type}'
-            """).fetchone()
-            if result:
+            result = self.client.query(f"""
+                SELECT * FROM sync_status 
+                WHERE data_type = '{data_type}'
+                ORDER BY updated_at DESC
+                LIMIT 1
+            """)
+            if result.result_rows:
+                row = result.result_rows[0]
                 return {
-                    "data_type": result[0],
-                    "last_sync_time": result[1],
-                    "last_success_time": result[2],
-                    "record_count": result[3],
-                    "status": result[4],
-                    "error_message": result[5]
+                    "data_type": row[0],
+                    "last_sync_time": row[1],
+                    "last_success_time": row[2],
+                    "record_count": row[3],
+                    "status": row[4],
+                    "error_message": row[5]
                 }
             return {}
         else:
-            return self.conn.execute("SELECT * FROM sync_status").df().to_dict(orient='records')
+            df = self.client.query_df("""
+                SELECT * FROM sync_status 
+                ORDER BY updated_at DESC
+            """)
+            return df.to_dict(orient='records')
     
     def incremental_update(self, table_name: str, df: pd.DataFrame,
                            key_columns: List[str],
@@ -285,52 +319,41 @@ class DuckDBManager:
         
         # 如果表不存在，创建表
         if not self.table_exists(table_name):
-            # 从 DataFrame 创建表
-            temp_view = f"temp_{table_name}"
-            self.conn.execute(f"CREATE OR REPLACE TEMPORARY VIEW {temp_view} AS SELECT * FROM df")
-            self.conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM {temp_view}")
+            self._create_table_from_df(df, table_name)
             logger.info(f"创建新表 {table_name}")
-            return
         
-        # 增量插入（排除重复）
-        for _, row in df.iterrows():
-            conditions = " AND ".join([f"{col} = '{row[col]}'" for col in key_columns])
-            exists = self.conn.execute(f"""
-                SELECT COUNT(*) FROM {table_name} WHERE {conditions}
-            """).fetchone()[0]
-            
-            if exists == 0:
-                # 构建插入语句
-                columns = ", ".join(df.columns)
-                placeholders = ", ".join(["?" for _ in df.columns])
-                values = [row[col] for col in df.columns]
-                
-                self.conn.execute(f"""
-                    INSERT INTO {table_name} ({columns}) VALUES ({placeholders})
-                """, values)
-        
+        # 使用去重插入
+        self.insert_dataframe(df, table_name, if_exists="append", unique_keys=key_columns)
         logger.info(f"增量更新完成，插入 {len(df)} 条新记录到 {table_name}")
     
     def backup(self, backup_path: Optional[str] = None):
-        """备份数据库"""
+        """备份数据库（导出为 CSV）"""
         if backup_path is None:
             backup_path = config.database.backup_path
         
         Path(backup_path).mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = Path(backup_path) / f"amazing_data_{timestamp}.duckdb"
+        backup_dir = Path(backup_path) / f"amazing_data_{timestamp}"
+        backup_dir.mkdir(exist_ok=True)
         
-        # 复制数据库文件
-        import shutil
-        shutil.copy2(self.db_path, backup_file)
+        # 导出所有表
+        tables = self.get_tables()
+        for table in tables:
+            try:
+                df = self.query(f"SELECT * FROM {table}")
+                csv_file = backup_dir / f"{table}.csv"
+                df.to_csv(csv_file, index=False)
+                logger.info(f"已备份表 {table} 到 {csv_file}")
+            except Exception as e:
+                logger.error(f"备份表 {table} 失败: {e}")
         
-        logger.info(f"数据库已备份到 {backup_file}")
-        return str(backup_file)
+        logger.info(f"数据库已备份到 {backup_dir}")
+        return str(backup_dir)
     
     def close(self):
         """关闭数据库连接"""
-        self.conn.close()
+        self.client.close()
     
     def __enter__(self):
         return self
@@ -340,14 +363,14 @@ class DuckDBManager:
 
 
 # 全局数据库实例
-_db_instance: Optional[DuckDBManager] = None
+_db_instance: Optional[ClickHouseManager] = None
 
 
-def get_db() -> DuckDBManager:
+def get_db() -> ClickHouseManager:
     """获取数据库实例（单例）"""
     global _db_instance
     if _db_instance is None:
-        _db_instance = DuckDBManager()
+        _db_instance = ClickHouseManager()
     return _db_instance
 
 

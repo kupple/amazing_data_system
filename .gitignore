@@ -40,7 +40,6 @@ htmlcov/
 .env
 
 # Data
-data/*.duckdb
 data/*.db
 logs/*.log
 logs/*.jsonl

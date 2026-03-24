@@ -12,9 +12,7 @@ import time
 
 
 def main():
-    db_path = "./data/baostock_full.duckdb"
-
-    client = BaostockClient(db_path=db_path)
+    client = BaostockClient()
     client.connect()
 
     # 获取全部股票
@@ -22,7 +20,8 @@ def main():
     print(f'总股票: {len(all_codes)}')
 
     # 获取已同步的股票
-    synced = set([r[0] for r in client.db.conn.execute('SELECT DISTINCT sec_code FROM daily_kline').fetchall()])
+    result = client.db.client.query('SELECT DISTINCT sec_code FROM daily_kline')
+    synced = set([r[0] for r in result.result_rows])
 
     # 过滤未同步的
     codes = [c for c in all_codes if c not in synced]

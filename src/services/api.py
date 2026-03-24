@@ -7,15 +7,11 @@ from fastapi import FastAPI, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import pandas as pd
-import duckdb
 
 from src.common.config import config
 from src.common.logger import logger
-from src.common.database import get_db, DuckDBManager
+from src.common.database import get_db, ClickHouseManager
 from src.common.models import APIResponse, DataSource
-
-# Baostock 数据库路径
-BAOSTOCK_DB_PATH = "./data/baostock_full.duckdb"
 
 
 # 创建 FastAPI 应用
@@ -59,18 +55,9 @@ class DataResponse(BaseModel):
 
 # ==================== 依赖 ====================
 
-def get_database() -> DuckDBManager:
+def get_database() -> ClickHouseManager:
     """获取数据库实例"""
     return get_db()
-
-
-def get_baostock_conn():
-    """获取 Baostock duckdb 连接"""
-    conn = duckdb.connect(BAOSTOCK_DB_PATH, read_only=True)
-    try:
-        yield conn
-    finally:
-        conn.close()
 
 
 # ==================== 根路径 ====================
@@ -94,7 +81,7 @@ async def health():
 # ==================== 表结构接口 ====================
 
 @app.get("/api/tables")
-async def list_tables(db: DuckDBManager = Depends(get_database)):
+async def list_tables(db: ClickHouseManager = Depends(get_database)):
     """获取所有表"""
     try:
         tables = db.get_tables()
@@ -119,7 +106,7 @@ async def list_tables(db: DuckDBManager = Depends(get_database)):
 
 
 @app.get("/api/tables/{table_name}/info")
-async def get_table_info(table_name: str, db: DuckDBManager = Depends(get_database)):
+async def get_table_info(table_name: str, db: ClickHouseManager = Depends(get_database)):
     """获取表结构信息"""
     try:
         # 获取表记录数
@@ -152,7 +139,7 @@ async def query_data(
     order_by: Optional[str] = Query(None, description="排序字段"),
     limit: int = Query(100, ge=1, le=5000, description="返回条数"),
     offset: int = Query(0, ge=0, description="偏移量"),
-    db: DuckDBManager = Depends(get_database)
+    db: ClickHouseManager = Depends(get_database)
 ):
     """查询数据"""
     try:
@@ -197,7 +184,7 @@ async def query_data(
 @app.post("/api/data/query")
 async def advanced_query(
     request: QueryRequest,
-    db: DuckDBManager = Depends(get_database)
+    db: ClickHouseManager = Depends(get_database)
 ):
     """高级查询"""
     try:
@@ -239,7 +226,7 @@ async def advanced_query(
 @app.get("/api/sync/status")
 async def get_sync_status(
     data_type: Optional[str] = Query(None, description="数据类型"),
-    db: DuckDBManager = Depends(get_database)
+    db: ClickHouseManager = Depends(get_database)
 ):
     """获取同步状态"""
     try:
@@ -285,7 +272,7 @@ class SyncTriggerRequest(BaseModel):
 @app.post("/api/sync/trigger")
 async def trigger_sync(
     request: SyncTriggerRequest,
-    db: DuckDBManager = Depends(get_database)
+    db: ClickHouseManager = Depends(get_database)
 ):
     """触发数据同步"""
     try:
@@ -337,7 +324,7 @@ async def trigger_sync(
 @app.post("/api/sql")
 async def execute_sql(
     sql: str = Query(..., description="SQL 语句"),
-    db: DuckDBManager = Depends(get_database)
+    db: ClickHouseManager = Depends(get_database)
 ):
     """执行原生 SQL（只读查询）"""
     try:
@@ -370,7 +357,7 @@ async def execute_sql(
 # ==================== 统计接口 ====================
 
 @app.get("/api/stats/overview")
-async def get_stats_overview(db: DuckDBManager = Depends(get_database)):
+async def get_stats_overview(db: ClickHouseManager = Depends(get_database)):
     """获取系统统计概览"""
     try:
         tables = db.get_tables()
@@ -407,7 +394,7 @@ async def get_stats_overview(db: DuckDBManager = Depends(get_database)):
 @app.get("/api/quote/{sec_code}")
 async def get_quote(
     sec_code: str,
-    db: DuckDBManager = Depends(get_database)
+    db: ClickHouseManager = Depends(get_database)
 ):
     """获取行情数据（便捷接口）"""
     try:
@@ -437,7 +424,7 @@ async def get_kline(
     sec_code: str,
     kline_type: str = Query("1D", description="K线类型: 1K, 5K, 15K, 30K, 1H, 1D, 1W, 1M"),
     limit: int = Query(100, ge=1, le=5000),
-    db: DuckDBManager = Depends(get_database)
+    db: ClickHouseManager = Depends(get_database)
 ):
     """获取K线数据"""
     try:
@@ -463,106 +450,6 @@ async def get_kline(
         raise
     except Exception as e:
         logger.error(f"获取K线失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==================== Baostock 数据接口 ====================
-
-@app.get("/api/baostock/stocks")
-async def baostock_get_stocks(
-    stock_type: Optional[str] = Query(None, description="股票类型: 1=A股, 2=B股"),
-    limit: int = Query(100, ge=1, le=5000),
-    offset: int = Query(0, ge=0),
-    conn=Depends(get_baostock_conn)
-):
-    """获取 Baostock 股票列表"""
-    try:
-        where = ""
-        params = []
-        if stock_type:
-            where = f"WHERE stock_type = '{stock_type}'"
-
-        total = conn.execute(f"SELECT COUNT(*) FROM stock_list {where}").fetchone()[0]
-        df = conn.execute(f"SELECT * FROM stock_list {where} LIMIT {limit} OFFSET {offset}").df()
-
-        return {"code": 200, "message": "success", "data": df.to_dict(orient="records"), "total": total, "page": offset // limit + 1, "page_size": limit}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/baostock/stocks/{sec_code}")
-async def baostock_get_stock(sec_code: str, conn=Depends(get_baostock_conn)):
-    """获取单个 Baostock 股票信息"""
-    try:
-        df = conn.execute(f"SELECT * FROM stock_list WHERE sec_code = ?", [sec_code]).df()
-        if df.empty:
-            raise HTTPException(status_code=404, detail=f"股票 {sec_code} 不存在")
-        return {"code": 200, "message": "success", "data": df.to_dict(orient="records")[0]}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/baostock/kline/{sec_code}")
-async def baostock_get_kline(
-    sec_code: str,
-    start_date: Optional[str] = Query(None, description="开始日期: YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="结束日期: YYYY-MM-DD"),
-    limit: int = Query(100, ge=1, le=10000),
-    offset: int = Query(0, ge=0),
-    conn=Depends(get_baostock_conn)
-):
-    """获取 Baostock 日线数据"""
-    try:
-        where = f"WHERE sec_code = '{sec_code}'"
-        if start_date:
-            where += f" AND trade_date >= '{start_date}'"
-        if end_date:
-            where += f" AND trade_date <= '{end_date}'"
-
-        total = conn.execute(f"SELECT COUNT(*) FROM daily_kline {where}").fetchone()[0]
-        df = conn.execute(f"SELECT * FROM daily_kline {where} ORDER BY trade_date DESC LIMIT {limit} OFFSET {offset}").df()
-
-        return {"code": 200, "message": "success", "data": df.to_dict(orient="records"), "total": total, "page": offset // limit + 1, "page_size": limit}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/baostock/stats")
-async def baostock_get_stats(conn=Depends(get_baostock_conn)):
-    """获取 Baostock 统计信息"""
-    try:
-        stock_count = conn.execute("SELECT COUNT(*) FROM stock_list").fetchone()[0]
-        kline_count = conn.execute("SELECT COUNT(*) FROM daily_kline").fetchone()[0]
-        kline_stock_count = conn.execute("SELECT COUNT(DISTINCT sec_code) FROM daily_kline").fetchone()[0]
-        max_date = conn.execute("SELECT MAX(trade_date) FROM daily_kline").fetchone()[0]
-
-        return {
-            "code": 200, "message": "success",
-            "data": {
-                "stock_count": stock_count,
-                "kline_count": kline_count,
-                "kline_stock_count": kline_stock_count,
-                "max_date": str(max_date) if max_date else None
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/baostock/tables")
-async def baostock_get_tables(conn=Depends(get_baostock_conn)):
-    """获取 Baostock 所有表"""
-    try:
-        tables = conn.execute("SHOW TABLES").fetchall()
-        table_list = []
-        for t in tables:
-            name = t[0]
-            count = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
-            table_list.append({"name": name, "count": count})
-        return {"code": 200, "message": "success", "data": table_list}
-    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

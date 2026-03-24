@@ -26,7 +26,11 @@ class AmazingDataConfig:
 @dataclass
 class DatabaseConfig:
     """数据库配置"""
-    db_path: str
+    host: str
+    port: int
+    database: str
+    username: str
+    password: str
     backup_path: str
 
 
@@ -96,7 +100,11 @@ class AppConfig:
                 email=os.getenv("AD_EMAIL"),
             ),
             database=DatabaseConfig(
-                db_path=os.getenv("DB_PATH", "./data/amazing_data.duckdb"),
+                host=os.getenv("DB_HOST", "localhost"),
+                port=int(os.getenv("DB_PORT", "8123")),
+                database=os.getenv("DB_NAME", "amazing_data"),
+                username=os.getenv("DB_USER", "default"),
+                password=os.getenv("DB_PASSWORD", ""),
                 backup_path=os.getenv("DB_BACKUP_PATH", "./data/backup"),
             ),
             api=APIConfig(

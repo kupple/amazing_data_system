@@ -10,27 +10,27 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, List
 from src.common.logger import logger
-from src.common.database import DuckDBManager
+from src.common.database import ClickHouseManager
 from src.collectors import BaseCollector
 
 
 class AkshareClient(BaseCollector):
     """Akshare 客户端"""
 
-    def __init__(self, db_path: str = "./data/akshare_data.duckdb"):
+    def __init__(self):
         super().__init__("akshare")
         self._last_request_time = 0
         self._min_request_interval = 2  # 最小请求间隔（秒）
         
         # 数据库
         self._db = None
-        self._db_path = db_path
 
     @property
-    def db(self) -> DuckDBManager:
+    def db(self) -> ClickHouseManager:
         """获取数据库实例"""
         if self._db is None:
-            self._db = DuckDBManager(self._db_path)
+            from src.common.database import get_db
+            self._db = get_db()
             self._init_db()
         return self._db
 
@@ -57,43 +57,39 @@ class AkshareClient(BaseCollector):
         self._last_request_time = time.time()
 
     def _init_db(self):
-        """初始化数据库表"""
+        """初始化 ClickHouse 表结构"""
         # 股票列表
-        self._db.conn.execute("""
+        self.db.client.command("""
             CREATE TABLE IF NOT EXISTS stock_list (
-                sec_code VARCHAR PRIMARY KEY,
-                name VARCHAR,
-                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+                sec_code String,
+                name String,
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY sec_code
         """)
         
         # 日线数据
-        self._db.conn.execute("""
+        self.db.client.command("""
             CREATE TABLE IF NOT EXISTS daily_kline (
-                id INTEGER PRIMARY KEY,
-                sec_code VARCHAR,
-                trade_date DATE,
-                open DOUBLE,
-                high DOUBLE,
-                low DOUBLE,
-                close DOUBLE,
-                volume BIGINT,
-                amount DOUBLE,
-                amplitude DOUBLE,
-                pct_change DOUBLE,
-                change_value DOUBLE,
-                turnover DOUBLE,
-                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(sec_code, trade_date)
-            )
+                id UInt64,
+                sec_code String,
+                trade_date Date,
+                open Nullable(Float64),
+                high Nullable(Float64),
+                low Nullable(Float64),
+                close Nullable(Float64),
+                volume Int64,
+                amount Nullable(Float64),
+                amplitude Nullable(Float64),
+                pct_change Nullable(Float64),
+                change_value Nullable(Float64),
+                turnover Nullable(Float64),
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (sec_code, trade_date)
         """)
         
-        # 创建索引
-        self._db.conn.execute("CREATE INDEX IF NOT EXISTS idx_kline_code ON daily_kline(sec_code)")
-        self._db.conn.execute("CREATE INDEX IF NOT EXISTS idx_kline_date ON daily_kline(trade_date)")
-        
-        self._db.conn.commit()
-        logger.info("Akshare 数据库初始化完成")
+        logger.info("Akshare ClickHouse 数据库初始化完成")
 
     def get_latest_date(self, sec_code: str) -> Optional[str]:
         """获取本地最新日期"""
@@ -333,11 +329,11 @@ class AkshareClient(BaseCollector):
 # 全局客户端
 _client = None
 
-def get_client(db_path: str = "./data/akshare_data.duckdb") -> AkshareClient:
+def get_client() -> AkshareClient:
     """获取客户端实例"""
     global _client
     if _client is None:
-        _client = AkshareClient(db_path)
+        _client = AkshareClient()
         _client.connect()
     return _client
 

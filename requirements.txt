@@ -1,7 +1,7 @@
 # AmazingData 数据管理系统依赖
 
 # 核心依赖
-duckdb>=0.9.0
+clickhouse-connect>=0.6.0
 pandas>=2.0.0
 
 # API 服务

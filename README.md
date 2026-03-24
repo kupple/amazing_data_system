@@ -75,12 +75,12 @@ python main.py --mode api
 ### Starlight
 - 位置：`src/collectors/starlight/`
 - 配置：`.env` 中的 `AD_*` 变量
-- 数据库：`./data/amazing_data.duckdb`
+- 数据库：ClickHouse
 
 ### MiniQMT
 - 位置：`src/collectors/miniqmt/`
 - 配置：`.env` 中的 `QMT_*` 变量
-- 数据库：`./data/qmt_data.duckdb`
+- 数据库：ClickHouse
 
 ## 添加新数据源
 

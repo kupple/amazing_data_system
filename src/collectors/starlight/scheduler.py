@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from src.common.config import config
 from src.common.logger import logger
 from src.collectors.starlight.client import get_client, AmazingDataClient
-from src.common.database import get_db, DuckDBManager
+from src.common.database import get_db, ClickHouseManager
 from src.common.retry import retry_manager
 from src.common.models import DataSource
 
@@ -21,7 +21,7 @@ class DataFetcher:
     """数据获取器"""
     
     def __init__(self, client: Optional[AmazingDataClient] = None,
-                 db: Optional[DuckDBManager] = None):
+                 db: Optional[ClickHouseManager] = None):
         self.client = client or get_client()
         self.db = db or get_db()
     

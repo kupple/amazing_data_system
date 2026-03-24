@@ -13,7 +13,7 @@ import uvicorn
 
 from src.common.config import config
 from src.common.logger import logger
-from src.common.database import get_db, DuckDBManager
+from src.common.database import get_db, ClickHouseManager
 
 
 # MCP 协议类型
@@ -45,7 +45,7 @@ class MCPService:
     """MCP 服务"""
     
     def __init__(self):
-        self.db: Optional[DuckDBManager] = None
+        self.db: Optional[ClickHouseManager] = None
         self.tools: Dict[str, MCPTool] = {}
         self._register_tools()
     

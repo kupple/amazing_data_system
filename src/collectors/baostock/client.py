@@ -8,24 +8,24 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, List
 from src.common.logger import logger
-from src.common.database import DuckDBManager
+from src.common.database import ClickHouseManager
 from src.collectors import BaseCollector
 
 
 class BaostockClient(BaseCollector):
     """Baostock 客户端"""
 
-    def __init__(self, db_path: str = "./data/baostock_full.duckdb"):
+    def __init__(self):
         super().__init__("baostock")
         self._last_request_time = 0
         self._min_request_interval = 0.5
         self._db = None
-        self._db_path = db_path
 
     @property
-    def db(self) -> DuckDBManager:
+    def db(self) -> ClickHouseManager:
         if self._db is None:
-            self._db = DuckDBManager(self._db_path)
+            from src.common.database import get_db
+            self._db = get_db()
             self._init_db()
         return self._db
 
@@ -59,75 +59,78 @@ class BaostockClient(BaseCollector):
         self._last_request_time = time.time()
 
     def _init_db(self):
-        self._db.conn.execute("""
+        """初始化 ClickHouse 表结构"""
+        self.db.client.command("""
             CREATE TABLE IF NOT EXISTS stock_list (
-                sec_code VARCHAR PRIMARY KEY,
-                code_name VARCHAR,
-                ipo_date DATE,
-                out_date DATE,
-                stock_type VARCHAR,
-                trade_status VARCHAR,
-                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+                sec_code String,
+                code_name String,
+                ipo_date Nullable(Date),
+                out_date Nullable(Date),
+                stock_type String,
+                trade_status String,
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY sec_code
         """)
-        self._db.conn.execute("""
+        
+        self.db.client.command("""
             CREATE TABLE IF NOT EXISTS daily_kline (
-                sec_code VARCHAR,
-                trade_date DATE,
-                open DOUBLE,
-                high DOUBLE,
-                low DOUBLE,
-                close DOUBLE,
-                volume BIGINT,
-                amount DOUBLE,
-                pct_chg DOUBLE,
-                turn DOUBLE,
-                trade_status VARCHAR,
-                is_st VARCHAR,
-                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(sec_code, trade_date)
-            )
+                sec_code String,
+                trade_date Date,
+                open Nullable(Float64),
+                high Nullable(Float64),
+                low Nullable(Float64),
+                close Nullable(Float64),
+                volume Int64,
+                amount Nullable(Float64),
+                pct_chg Nullable(Float64),
+                turn Nullable(Float64),
+                trade_status Nullable(String),
+                is_st Nullable(String),
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (sec_code, trade_date)
         """)
-        self._db.conn.execute("""
+        
+        self.db.client.command("""
             CREATE TABLE IF NOT EXISTS sync_log (
-                id INTEGER PRIMARY KEY,
-                sec_code VARCHAR,
-                data_type VARCHAR,
-                success INTEGER,
-                record_count INTEGER,
-                error_message TEXT,
-                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+                id UInt64,
+                sec_code String,
+                data_type String,
+                success UInt8,
+                record_count UInt32,
+                error_message String,
+                update_time DateTime DEFAULT now()
+            ) ENGINE = MergeTree()
+            ORDER BY (sec_code, update_time)
         """)
-        self._db.conn.execute("CREATE INDEX IF NOT EXISTS idx_kline_code ON daily_kline(sec_code)")
-        self._db.conn.execute("CREATE INDEX IF NOT EXISTS idx_kline_date ON daily_kline(trade_date)")
-        self._db.conn.commit()
-        logger.info("数据库初始化完成")
+        
+        logger.info("ClickHouse 数据库初始化完成")
 
     def get_latest_date(self, sec_code: str) -> Optional[str]:
         try:
-            result = self.db.conn.execute(
-                "SELECT MAX(trade_date) FROM daily_kline WHERE sec_code = ?", [sec_code]
-            ).fetchone()
-            if result and result[0]:
-                return result[0].strftime('%Y-%m-%d')
+            result = self.db.client.query(
+                f"SELECT MAX(trade_date) FROM daily_kline WHERE sec_code = '{sec_code}'"
+            )
+            if result.result_rows and result.result_rows[0][0]:
+                return str(result.result_rows[0][0])
             return None
         except:
             return None
 
     def get_all_codes(self) -> List[str]:
         try:
-            result = self.db.conn.execute("SELECT sec_code FROM stock_list").fetchall()
-            codes = [r[0] for r in result]
+            result = self.db.client.query("SELECT sec_code FROM stock_list")
+            codes = [r[0] for r in result.result_rows]
             if not codes:
-                return ['600000.SH', '600036.SH', '600519.SH', '000001.SH', '000002.SH',
-                        '000333.SH', '000651.SH', '000858.SH', '300750.SH', '688111.SH']
+                return ['600000.SH', '600036.SH', '600519.SH', '000001.SZ', '000002.SZ',
+                        '000333.SZ', '000651.SZ', '000858.SZ', '300750.SZ', '688111.SH']
             return codes
         except:
-            return ['600000.SH', '600036.SH', '600519.SH', '000001.SH', '000002.SH']
+            return ['600000.SH', '600036.SH', '600519.SH', '000001.SZ', '000002.SZ']
 
     def get_stock_list(self) -> pd.DataFrame:
-        return self.db.conn.execute("SELECT * FROM stock_list").df()
+        return self.db.query("SELECT * FROM stock_list")
 
     def sync_stock_list(self) -> dict:
         logger.info("同步股票列表...")
@@ -136,25 +139,29 @@ class BaostockClient(BaseCollector):
             logger.error(f"获取股票列表失败: {rs.error_msg}")
             return {'success': False, 'error': rs.error_msg}
 
-        count = 0
+        records = []
         while rs.next():
             row = rs.get_row_data()
             code = row[0]
             if code and (code.startswith('sh.') or code.startswith('sz.')):
                 sec_code = code.replace('sh.', '') + '.SH' if code.startswith('sh.') else code.replace('sz.', '') + '.SZ'
-                try:
-                    self.db.conn.execute("""
-                        INSERT OR REPLACE INTO stock_list
-                        (sec_code, code_name, ipo_date, out_date, stock_type, trade_status, update_time)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, [sec_code, row[1], row[2] or None, row[3] or None, row[4], row[5], datetime.now()])
-                    count += 1
-                except:
-                    pass
+                records.append({
+                    'sec_code': sec_code,
+                    'code_name': row[1],
+                    'ipo_date': row[2] if row[2] else None,
+                    'out_date': row[3] if row[3] else None,
+                    'stock_type': row[4],
+                    'trade_status': row[5],
+                    'update_time': datetime.now()
+                })
 
-        self.db.conn.commit()
-        logger.info(f"股票列表同步完成: {count} 条")
-        return {'success': True, 'record_count': count}
+        if records:
+            df = pd.DataFrame(records)
+            self.db.insert_dataframe(df, 'stock_list', if_exists='append')
+            logger.info(f"股票列表同步完成: {len(records)} 条")
+            return {'success': True, 'record_count': len(records)}
+        
+        return {'success': True, 'record_count': 0}
 
     def sync_daily_kline(self, sec_code: str = None, force: bool = False) -> dict:
         codes = [sec_code] if sec_code else self.get_all_codes()
@@ -191,50 +198,49 @@ class BaostockClient(BaseCollector):
                 if rs.error_code != '0':
                     continue
 
-                count = 0
+                records = []
                 while rs.next():
                     row = rs.get_row_data()
                     if len(row) >= 8:
-                        try:
-                            self.db.conn.execute("""
-                                INSERT OR IGNORE INTO daily_kline
-                                (sec_code, trade_date, open, high, low, close, volume, amount, pct_chg, turn, trade_status, is_st, update_time)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, [
-                                code, row[0],
-                                float(row[1]) if row[1] else None,
-                                float(row[2]) if row[2] else None,
-                                float(row[3]) if row[3] else None,
-                                float(row[4]) if row[4] else None,
-                                int(float(row[5])) if row[5] else 0,
-                                float(row[6]) if row[6] else None,
-                                float(row[7]) if row[7] else None,
-                                float(row[8]) if row[8] else None,
-                                row[9] if len(row) > 9 else None,
-                                row[10] if len(row) > 10 else None,
-                                datetime.now()
-                            ])
-                            count += 1
-                        except Exception as e:
-                            logger.debug(f"插入失败: {e}")
+                        records.append({
+                            'sec_code': code,
+                            'trade_date': row[0],
+                            'open': float(row[1]) if row[1] else None,
+                            'high': float(row[2]) if row[2] else None,
+                            'low': float(row[3]) if row[3] else None,
+                            'close': float(row[4]) if row[4] else None,
+                            'volume': int(float(row[5])) if row[5] else 0,
+                            'amount': float(row[6]) if row[6] else None,
+                            'pct_chg': float(row[7]) if row[7] else None,
+                            'turn': float(row[8]) if row[8] else None,
+                            'trade_status': row[9] if len(row) > 9 else None,
+                            'is_st': row[10] if len(row) > 10 else None,
+                            'update_time': datetime.now()
+                        })
 
-                self.db.conn.commit()
-                total_count += count
-                success_count += 1
-                self.db.conn.execute("""
-                    INSERT INTO sync_log (id, sec_code, data_type, success, record_count, error_message, update_time)
-                    VALUES (NULL, ?, ?, ?, ?, ?, ?)
-                """, [code, 'daily_kline', 1, count, '', datetime.now()])
-                self.db.conn.commit()
-                logger.debug(f"{code}: {count} 条")
+                if records:
+                    df = pd.DataFrame(records)
+                    self.db.insert_dataframe(df, 'daily_kline', if_exists='append', unique_keys=['sec_code', 'trade_date'])
+                    count = len(records)
+                    total_count += count
+                    success_count += 1
+                    
+                    # 记录同步日志
+                    max_id_result = self.db.client.query("SELECT max(id) FROM sync_log")
+                    max_id = max_id_result.result_rows[0][0] if max_id_result.result_rows[0][0] else 0
+                    self.db.client.insert('sync_log', [[
+                        max_id + 1, code, 'daily_kline', 1, count, '', datetime.now()
+                    ]], column_names=['id', 'sec_code', 'data_type', 'success', 'record_count', 'error_message', 'update_time'])
+                    
+                    logger.debug(f"{code}: {count} 条")
 
             except Exception as e:
                 logger.debug(f"{code} 异常: {e}")
-                self.db.conn.execute("""
-                    INSERT INTO sync_log (id, sec_code, data_type, success, record_count, error_message, update_time)
-                    VALUES (NULL, ?, ?, ?, ?, ?, ?)
-                """, [code, 'daily_kline', 0, 0, str(e), datetime.now()])
-                self.db.conn.commit()
+                max_id_result = self.db.client.query("SELECT max(id) FROM sync_log")
+                max_id = max_id_result.result_rows[0][0] if max_id_result.result_rows[0][0] else 0
+                self.db.client.insert('sync_log', [[
+                    max_id + 1, code, 'daily_kline', 0, 0, str(e), datetime.now()
+                ]], column_names=['id', 'sec_code', 'data_type', 'success', 'record_count', 'error_message', 'update_time'])
 
         logger.info(f"日线同步完成: {success_count}/{len(codes)} 只, {total_count} 条")
         return {'success': True, 'record_count': total_count, 'success_count': success_count}
@@ -246,24 +252,23 @@ class BaostockClient(BaseCollector):
         }
 
     def get_daily_kline(self, sec_code: str, start_date: str = None, end_date: str = None, adjust: str = "qfq") -> pd.DataFrame:
-        query = "SELECT * FROM daily_kline WHERE sec_code = ?"
-        params = [sec_code]
+        query = f"SELECT * FROM daily_kline WHERE sec_code = '{sec_code}'"
         if start_date:
-            query += " AND trade_date >= ?"
-            params.append(start_date)
+            query += f" AND trade_date >= '{start_date}'"
         if end_date:
-            query += " AND trade_date <= ?"
-            params.append(end_date)
+            query += f" AND trade_date <= '{end_date}'"
         query += " ORDER BY trade_date"
-        return self.db.conn.execute(query, params).df()
+        return self.db.query(query)
 
     def get_kline(self, sec_code: str, start_date: str = None, end_date: str = None, **kwargs) -> pd.DataFrame:
         return self.get_daily_kline(sec_code, start_date, end_date)
 
     def get_sync_status(self) -> dict:
         try:
-            stock_count = self.db.conn.execute("SELECT COUNT(*) FROM stock_list").fetchone()[0]
-            kline_count = self.db.conn.execute("SELECT COUNT(*) FROM daily_kline").fetchone()[0]
+            stock_result = self.db.client.query("SELECT COUNT(*) FROM stock_list")
+            kline_result = self.db.client.query("SELECT COUNT(*) FROM daily_kline")
+            stock_count = stock_result.result_rows[0][0] if stock_result.result_rows else 0
+            kline_count = kline_result.result_rows[0][0] if kline_result.result_rows else 0
             return {'stock_count': stock_count, 'kline_count': kline_count}
         except Exception as e:
             return {'error': str(e)}
@@ -275,10 +280,10 @@ class BaostockClient(BaseCollector):
 
 _client = None
 
-def get_client(db_path: str = "./data/baostock_full.duckdb") -> BaostockClient:
+def get_client() -> BaostockClient:
     global _client
     if _client is None:
-        _client = BaostockClient(db_path)
+        _client = BaostockClient()
         _client.connect()
     return _client
 
