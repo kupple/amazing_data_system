@@ -30,6 +30,33 @@ from src.common.logger import logger
 from src.common.retry import retry
 
 
+def _patch_pandas_frequency_aliases():
+    """兼容旧版 SDK 仍使用大写频率别名的情况。"""
+    try:
+        from pandas.tseries import frequencies
+
+        alias_pairs = {
+            "S": "s",
+            "T": "min",
+            "L": "ms",
+            "U": "us",
+            "N": "ns",
+        }
+
+        for attr_name in ("_lite_rule_alias", "_offset_to_period_map", "OFFSET_TO_PERIOD_FREQSTR"):
+            mapping = getattr(frequencies, attr_name, None)
+            if not isinstance(mapping, dict):
+                continue
+            for legacy_key, modern_key in alias_pairs.items():
+                if legacy_key not in mapping and modern_key in mapping:
+                    mapping[legacy_key] = mapping[modern_key]
+    except Exception:
+        pass
+
+
+_patch_pandas_frequency_aliases()
+
+
 class AmazingDataClient:
     """AmazingData 客户端 - 严格按照官方文档实现"""
 
@@ -119,6 +146,49 @@ class AmazingDataClient:
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    def _call_info_method(self, method, *args, is_local: bool = True,
+                          force_remote: bool = False, **kwargs):
+        """按文档规则调用 InfoData 方法。"""
+        if not self._connected:
+            self.connect()
+
+        call_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if value is not None
+        }
+
+        if force_remote:
+            call_kwargs["is_local"] = False
+        else:
+            call_kwargs["is_local"] = is_local
+            if is_local:
+                call_kwargs["local_path"] = self.local_path
+
+        return method(*args, **call_kwargs)
+
+    def _call_market_method(self, method, code_list: List[str], begin_date: int,
+                            end_date: int, period: Optional[int] = None,
+                            begin_time: Optional[int] = None,
+                            end_time: Optional[int] = None):
+        """按文档规则调用 MarketData 方法，省略未提供的可选时间参数。"""
+        if not self._connected:
+            self.connect()
+
+        call_kwargs = {
+            "begin_date": begin_date,
+            "end_date": end_date,
+        }
+
+        if period is not None:
+            call_kwargs["period"] = period
+        if begin_time not in (None, 0):
+            call_kwargs["begin_time"] = begin_time
+        if end_time not in (None, 0):
+            call_kwargs["end_time"] = end_time
+
+        return method(code_list, **call_kwargs)
 
     # ========== 3.5.1 基础接口 ==========
     
@@ -256,11 +326,10 @@ class AmazingDataClient:
     def query_snapshot(self, code_list: List[str], begin_date: int, end_date: int,
                        begin_time: Optional[int] = None, end_time: Optional[int] = None) -> Dict:
         """3.5.4.1 历史快照"""
-        if not self._connected:
-            self.connect()
-        return self._market.query_snapshot(
-            code_list, 
-            begin_date=begin_date, 
+        return self._call_market_method(
+            self._market.query_snapshot,
+            code_list=code_list,
+            begin_date=begin_date,
             end_date=end_date,
             begin_time=begin_time,
             end_time=end_time
@@ -268,18 +337,13 @@ class AmazingDataClient:
 
     @retry(max_attempts=3, data_type="kline")
     def query_kline(self, code_list: List[str], begin_date: int, end_date: int,
-                    period: int, begin_time: Optional[int] = 0, 
-                    end_time: Optional[int] = 0) -> Dict:
+                    period: Optional[int] = 1440, begin_time: Optional[int] = None,
+                    end_time: Optional[int] = None) -> Dict:
         """3.5.4.2 历史K线"""
-        if not self._connected:
-            self.connect()
-        
-        # 使用0代替None，SDK可能不支持None
-        begin_time = begin_time if begin_time is not None else 0
-        end_time = end_time if end_time is not None else 0
-            
-        return self._market.query_kline(
-            code_list,
+        period = 1440 if period is None else period
+        return self._call_market_method(
+            self._market.query_kline,
+            code_list=code_list,
             begin_date=begin_date,
             end_date=end_date,
             period=period,
@@ -666,11 +730,9 @@ class AmazingDataClient:
                             begin_date: Optional[int] = None, 
                             end_date: Optional[int] = None) -> Dict:
         """3.5.13.3 行业指数成分股日权重"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_industry_weight(
+        return self._call_info_method(
+            self._info.get_industry_weight,
             code_list,
-            local_path=self.local_path,
             is_local=is_local,
             begin_date=begin_date,
             end_date=end_date
@@ -681,11 +743,9 @@ class AmazingDataClient:
                            begin_date: Optional[int] = None, 
                            end_date: Optional[int] = None) -> Dict:
         """3.5.13.4 行业指数日行情"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_industry_daily(
+        return self._call_info_method(
+            self._info.get_industry_daily,
             code_list,
-            local_path=self.local_path,
             is_local=is_local,
             begin_date=begin_date,
             end_date=end_date
@@ -773,34 +833,31 @@ class AmazingDataClient:
     @retry(max_attempts=3, data_type="kzz_put_call_item")
     def get_kzz_put_call_item(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
         """3.5.14.8 可转债回售赎回条款"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_put_call_item(
+        return self._call_info_method(
+            self._info.get_kzz_put_call_item,
             code_list,
-            local_path=self.local_path,
-            is_local=is_local
+            is_local=is_local,
+            force_remote=True
         )
 
     @retry(max_attempts=3, data_type="kzz_put_explanation")
     def get_kzz_put_explanation(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
         """3.5.14.9 可转债回售条款执行说明"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_put_explanation(
+        return self._call_info_method(
+            self._info.get_kzz_put_explanation,
             code_list,
-            local_path=self.local_path,
-            is_local=is_local
+            is_local=is_local,
+            force_remote=True
         )
 
     @retry(max_attempts=3, data_type="kzz_call_explanation")
     def get_kzz_call_explanation(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
         """3.5.14.10 可转债赎回条款执行说明"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_call_explanation(
+        return self._call_info_method(
+            self._info.get_kzz_call_explanation,
             code_list,
-            local_path=self.local_path,
-            is_local=is_local
+            is_local=is_local,
+            force_remote=True
         )
 
     @retry(max_attempts=3, data_type="kzz_suspend")

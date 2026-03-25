@@ -226,9 +226,7 @@ Content-Type: application/json
   "parameters": {
     "code_list": ["000001.SZ"],
     "begin_date": 20240101,
-    "end_date": 20240131,
-    "begin_time": 93000000,
-    "end_time": 150000000
+    "end_date": 20240131
   }
 }
 ```
@@ -242,9 +240,7 @@ Content-Type: application/json
     "code_list": ["000001.SZ"],
     "begin_date": 20240101,
     "end_date": 20240131,
-    "period": 1440,
-    "begin_time": 0,
-    "end_time": 0
+    "period": 1440
   }
 }
 ```
@@ -525,8 +521,8 @@ Content-Type: application/json
 {
   "method": "get_industry_constituent",
   "parameters": {
-    "code_list": ["CI005001.WI"],
-    "is_local": true
+    "code_list": ["851783.SI"],
+    "is_local": false
   }
 }
 ```
@@ -537,10 +533,8 @@ Content-Type: application/json
 {
   "method": "get_industry_weight",
   "parameters": {
-    "code_list": ["CI005001.WI"],
-    "is_local": true,
-    "begin_date": 20240101,
-    "end_date": 20241231
+    "code_list": ["851783.SI"],
+    "is_local": false
   }
 }
 ```
@@ -551,10 +545,8 @@ Content-Type: application/json
 {
   "method": "get_industry_daily",
   "parameters": {
-    "code_list": ["CI005001.WI"],
-    "is_local": true,
-    "begin_date": 20240101,
-    "end_date": 20241231
+    "code_list": ["851783.SI"],
+    "is_local": false
   }
 }
 ```
@@ -664,7 +656,7 @@ Content-Type: application/json
   "method": "get_kzz_put_call_item",
   "parameters": {
     "code_list": ["110059.SH"],
-    "is_local": true
+    "is_local": false
   }
 }
 ```
@@ -676,7 +668,7 @@ Content-Type: application/json
   "method": "get_kzz_put_explanation",
   "parameters": {
     "code_list": ["110059.SH"],
-    "is_local": true
+    "is_local": false
   }
 }
 ```
@@ -688,7 +680,7 @@ Content-Type: application/json
   "method": "get_kzz_call_explanation",
   "parameters": {
     "code_list": ["110059.SH"],
-    "is_local": true
+    "is_local": false
   }
 }
 ```

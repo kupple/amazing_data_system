@@ -768,6 +768,27 @@ def _normalize_amazingdata_method(method_name: str) -> Optional[str]:
     return None
 
 
+def _normalize_amazingdata_parameters(method_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    """按文档习惯归一化请求参数，避免把无意义的默认值传给 SDK。"""
+    normalized = dict(parameters)
+
+    if method_name == "query_kline":
+        if normalized.get("period") is None:
+            normalized["period"] = 1440
+        if normalized.get("begin_time") in (None, 0, "0", ""):
+            normalized.pop("begin_time", None)
+        if normalized.get("end_time") in (None, 0, "0", ""):
+            normalized.pop("end_time", None)
+
+    if method_name == "query_snapshot":
+        if normalized.get("begin_time") in (None, 0, "0", ""):
+            normalized.pop("begin_time", None)
+        if normalized.get("end_time") in (None, 0, "0", ""):
+            normalized.pop("end_time", None)
+
+    return normalized
+
+
 def _unwrap_retry_method(method: Any) -> Any:
     """优先使用被 retry 装饰前的原始方法，避免 API 层重复重试。"""
     wrapped = getattr(method, "__wrapped__", None)
@@ -803,6 +824,11 @@ async def call_amazingdata_method(request: AmazingDataRequest):
                 )
             )
 
+        normalized_parameters = _normalize_amazingdata_parameters(
+            normalized_method,
+            request.parameters
+        )
+
         method = getattr(client, normalized_method)
         raw_method = _unwrap_retry_method(method)
         if not callable(raw_method):
@@ -813,7 +839,7 @@ async def call_amazingdata_method(request: AmazingDataRequest):
             )
 
         try:
-            inspect.signature(raw_method).bind(**request.parameters)
+            inspect.signature(raw_method).bind(**normalized_parameters)
         except TypeError as e:
             return _amazingdata_error_response(
                 status_code=400,
@@ -823,10 +849,10 @@ async def call_amazingdata_method(request: AmazingDataRequest):
 
         logger.info(
             f"API 调用: original_method={request.method}, "
-            f"normalized_method={normalized_method}, parameters={request.parameters}"
+            f"normalized_method={normalized_method}, parameters={normalized_parameters}"
         )
         try:
-            result = await run_in_threadpool(raw_method, **request.parameters)
+            result = await run_in_threadpool(raw_method, **normalized_parameters)
         except TypeError as e:
             return _amazingdata_error_response(
                 status_code=400,
