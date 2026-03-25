@@ -156,7 +156,7 @@ class StarlightSyncManager(StarlightSyncSupport):
                 factor_frames = []
                 for batch_index, batch_codes in self._iter_batches(
                     code_list,
-                    batch_size=50,
+                    batch_size=1050,
                     checkpoint_key="sync_basic.backward_factor",
                 ):
                     backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
@@ -182,7 +182,7 @@ class StarlightSyncManager(StarlightSyncSupport):
                 factor_frames = []
                 for batch_index, batch_codes in self._iter_batches(
                     code_list,
-                    batch_size=50,
+                    batch_size=1050,
                     checkpoint_key="sync_basic.adj_factor",
                 ):
                     adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
