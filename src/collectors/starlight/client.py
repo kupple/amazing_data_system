@@ -268,11 +268,16 @@ class AmazingDataClient:
 
     @retry(max_attempts=3, data_type="kline")
     def query_kline(self, code_list: List[str], begin_date: int, end_date: int,
-                    period: int, begin_time: Optional[int] = None, 
-                    end_time: Optional[int] = None) -> Dict:
+                    period: int, begin_time: Optional[int] = 0, 
+                    end_time: Optional[int] = 0) -> Dict:
         """3.5.4.2 历史K线"""
         if not self._connected:
             self.connect()
+        
+        # 使用0代替None，SDK可能不支持None
+        begin_time = begin_time if begin_time is not None else 0
+        end_time = end_time if end_time is not None else 0
+            
         return self._market.query_kline(
             code_list,
             begin_date=begin_date,

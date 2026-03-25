@@ -86,20 +86,41 @@ class StarlightSyncManager:
         # 1.2 交易日历
         logger.info("1.2 同步交易日历...")
         try:
-            # get_calendar 的参数是 data_type 和 market
+            # get_calendar 返回日期列表
             calendar = self.client.get_calendar(data_type="str", market="SH")
-            df = pd.DataFrame({"trade_date": calendar})
-            df["trade_date"] = pd.to_datetime(df["trade_date"])
-            
-            self.db.incremental_update(
-                "trading_calendar",
-                df,
-                key_columns=["trade_date"],
-                date_column="trade_date"
-            )
-            logger.info(f"✓ 交易日历已更新")
+            if calendar:
+                logger.info(f"原始数据: {calendar[:5]}, 类型: {[type(x).__name__ for x in calendar[:5]]}")
+                df = pd.DataFrame({"trade_date": calendar})
+                
+                # 尝试多种日期格式解析
+                formats = ["%Y%m%d", "%Y-%m-%d", "%Y/%m/%d", None]
+                for fmt in formats:
+                    try:
+                        df["trade_date"] = pd.to_datetime(df["trade_date"], format=fmt)
+                        logger.info(f"使用格式 {fmt} 解析成功")
+                        break
+                    except Exception as e:
+                        logger.warning(f"格式 {fmt} 解析失败: {e}")
+                        continue
+                
+                logger.info(f"解析后数据: {df['trade_date'].head().tolist()}")
+                
+                # 删除无效日期
+                df = df.dropna(subset=["trade_date"])
+                
+                self.db.incremental_update(
+                    "trading_calendar",
+                    df,
+                    key_columns=["trade_date"],
+                    date_column="trade_date"
+                )
+                logger.info(f"✓ 交易日历已更新: {len(df)} 条")
+            else:
+                logger.warning("交易日历为空，跳过")
         except Exception as e:
             logger.error(f"✗ 同步交易日历失败: {e}")
+            import traceback
+            traceback.print_exc()
         
         # 1.3 证券基础信息
         logger.info("1.3 同步证券基础信息...")
