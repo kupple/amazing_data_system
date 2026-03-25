@@ -36,11 +36,16 @@ class AmazingDataClient:
     def __init__(self, account: Optional[str] = None,
                  password: Optional[str] = None,
                  ip: Optional[str] = None,
-                 port: Optional[int] = None):
+                 port: Optional[int] = None,
+                 local_path: Optional[str] = None):
         self.account = account or config.amazing_data.account
         self.password = password or config.amazing_data.password
         self.ip = ip or config.amazing_data.ip
         self.port = port or config.amazing_data.port
+        # 使用临时目录作为默认缓存路径
+        import os
+        self.local_path = local_path or os.path.join(os.getcwd(), 'temp_cache')
+        os.makedirs(self.local_path, exist_ok=True)
 
         self._client = None
         self._base = None
@@ -168,53 +173,53 @@ class AmazingDataClient:
     # ========== InfoData 财务数据接口 ==========
 
     @retry(max_attempts=3, data_type="balance_sheet")
-    def get_balance_sheet(self, sec_codes: List[str], report_type: int = 1) -> pd.DataFrame:
+    def get_balance_sheet(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
         """资产负债表"""
         if not self._connected:
             self.connect()
-        return self._info.get_balance_sheet(sec_codes, report_type)
+        return self._info.get_balance_sheet(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="cash_flow")
-    def get_cash_flow(self, sec_codes: List[str], report_type: int = 1) -> pd.DataFrame:
+    def get_cash_flow(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
         """现金流量表"""
         if not self._connected:
             self.connect()
-        return self._info.get_cash_flow(sec_codes, report_type)
+        return self._info.get_cash_flow(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="income")
-    def get_income(self, sec_codes: List[str], report_type: int = 1) -> pd.DataFrame:
+    def get_income(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
         """利润表"""
         if not self._connected:
             self.connect()
-        return self._info.get_income(sec_codes, report_type)
+        return self._info.get_income(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="express_report")
-    def get_express_report(self, sec_codes: List[str]) -> pd.DataFrame:
+    def get_express_report(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
         """业绩快报"""
         if not self._connected:
             self.connect()
-        return self._info.get_express_report(sec_codes)
+        return self._info.get_profit_express(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="forecast_report")
-    def get_forecast_report(self, sec_codes: List[str]) -> pd.DataFrame:
+    def get_forecast_report(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
         """业绩预告"""
         if not self._connected:
             self.connect()
-        return self._info.get_forecast_report(sec_codes)
+        return self._info.get_profit_notice(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="dividend")
-    def get_dividend(self, sec_codes: List[str]) -> pd.DataFrame:
+    def get_dividend(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
         """分红数据"""
         if not self._connected:
             self.connect()
-        return self._info.get_dividend(sec_codes)
+        return self._info.get_dividend(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="right_issue")
-    def get_right_issue(self, sec_codes: List[str]) -> pd.DataFrame:
+    def get_right_issue(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
         """配股数据"""
         if not self._connected:
             self.connect()
-        return self._info.get_right_issue(sec_codes)
+        return self._info.get_right_issue(sec_codes, local_path=self.local_path, is_local=is_local)
 
     # ========== 股东股本数据 ==========
 
@@ -256,34 +261,34 @@ class AmazingDataClient:
     # ========== 融资融券数据 ==========
 
     @retry(max_attempts=3, data_type="margin_summary")
-    def get_margin_summary(self, sec_codes: List[str], date: str) -> pd.DataFrame:
+    def get_margin_summary(self, is_local: bool = False) -> pd.DataFrame:
         """融资融券成交汇总"""
         if not self._connected:
             self.connect()
-        return self._info.get_margin_summary(sec_codes, date)
+        return self._info.get_margin_summary(local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="margin_detail")
-    def get_margin_detail(self, sec_codes: List[str], date: str) -> pd.DataFrame:
+    def get_margin_detail(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
         """融资融券交易明细"""
         if not self._connected:
             self.connect()
-        return self._info.get_margin_detail(sec_codes, date)
+        return self._info.get_margin_detail(sec_codes, local_path=self.local_path, is_local=is_local)
 
     # ========== 交易异动数据 ==========
 
     @retry(max_attempts=3, data_type="dragon_tiger")
-    def get_dragon_tiger(self, date: str) -> pd.DataFrame:
+    def get_dragon_tiger(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
         """龙虎榜"""
         if not self._connected:
             self.connect()
-        return self._info.get_long_hu_bang(date)
+        return self._info.get_long_hu_bang(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="block_trade")
-    def get_block_trade(self, date: str) -> pd.DataFrame:
+    def get_block_trade(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
         """大宗交易"""
         if not self._connected:
             self.connect()
-        return self._info.get_block_trading(date)
+        return self._info.get_block_trading(sec_codes, local_path=self.local_path, is_local=is_local)
 
     # ========== 期权数据 ==========
 
@@ -343,69 +348,69 @@ class AmazingDataClient:
     # ========== 行业指数数据 ==========
 
     @retry(max_attempts=3, data_type="industry_index_info")
-    def get_industry_index_info(self) -> pd.DataFrame:
+    def get_industry_index_info(self, is_local: bool = False) -> pd.DataFrame:
         """行业指数基本信息"""
         if not self._connected:
             self.connect()
-        return self._info.get_industry_base_info()
+        return self._info.get_industry_base_info(local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="industry_index_components")
-    def get_industry_index_components(self, industry_code: str) -> pd.DataFrame:
+    def get_industry_index_components(self, industry_code: str, is_local: bool = False) -> pd.DataFrame:
         """行业指数成分股"""
         if not self._connected:
             self.connect()
-        return self._info.get_industry_constituent(industry_code)
+        return self._info.get_industry_constituent(industry_code, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="industry_index_weight")
-    def get_industry_index_weight(self, industry_code: str, date: str) -> pd.DataFrame:
+    def get_industry_index_weight(self, industry_code: str, is_local: bool = False) -> pd.DataFrame:
         """行业指数权重"""
         if not self._connected:
             self.connect()
-        return self._info.get_industry_weight(industry_code, date)
+        return self._info.get_industry_weight(industry_code, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="industry_index_daily")
-    def get_industry_index_daily(self, industry_code: str, date: str) -> pd.DataFrame:
+    def get_industry_index_daily(self, industry_code: str, is_local: bool = False) -> pd.DataFrame:
         """行业指数日行情"""
         if not self._connected:
             self.connect()
-        return self._info.get_industry_daily(industry_code, date)
+        return self._info.get_industry_daily(industry_code, local_path=self.local_path, is_local=is_local)
 
     # ========== 可转债数据 ==========
 
     @retry(max_attempts=3, data_type="cb_issuance")
-    def get_cb_issuance(self, date: str = None) -> pd.DataFrame:
+    def get_cb_issuance(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
         """可转债发行"""
         if not self._connected:
             self.connect()
-        return self._info.get_kzz_issuance(date)
+        return self._info.get_kzz_issuance(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="cb_shares")
-    def get_cb_shares(self, date: str) -> pd.DataFrame:
+    def get_cb_shares(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
         """可转债份额"""
         if not self._connected:
             self.connect()
-        return self._info.get_kzz_share(date)
+        return self._info.get_kzz_share(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="cb_conversion")
-    def get_cb_conversion(self, date: str) -> pd.DataFrame:
+    def get_cb_conversion(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
         """可转债转股"""
         if not self._connected:
             self.connect()
-        return self._info.get_kzz_conv(date)
+        return self._info.get_kzz_conv(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="cb_conversion_change")
-    def get_cb_conversion_change(self, date: str) -> pd.DataFrame:
+    def get_cb_conversion_change(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
         """可转债转股变动"""
         if not self._connected:
             self.connect()
-        return self._info.get_kzz_conv_change(date)
+        return self._info.get_kzz_conv_change(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="cb_modification")
-    def get_cb_modification(self, date: str) -> pd.DataFrame:
+    def get_cb_modification(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
         """可转债修正"""
         if not self._connected:
             self.connect()
-        return self._info.get_kzz_corr(date)
+        return self._info.get_kzz_corr(sec_codes, local_path=self.local_path, is_local=is_local)
 
     @retry(max_attempts=3, data_type="cb_redemption")
     def get_cb_redemption(self, date: str) -> pd.DataFrame:
@@ -449,11 +454,11 @@ class AmazingDataClient:
     # ========== 北交所 ==========
 
     @retry(max_attempts=3, data_type="bse_mapping")
-    def get_bse_code_mapping(self) -> pd.DataFrame:
+    def get_bse_code_mapping(self, is_local: bool = False) -> pd.DataFrame:
         """北交所新旧代码对照"""
         if not self._connected:
             self.connect()
-        return self._info.get_bj_code_mapping()
+        return self._info.get_bj_code_mapping(local_path=self.local_path, is_local=is_local)
 
 
 # 全局客户端实例

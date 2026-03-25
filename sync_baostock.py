@@ -15,9 +15,13 @@ def main():
     client = BaostockClient()
     client.connect()
 
-    # 获取全部股票
+    # 使用 get_all_codes 获取股票列表（会先查数据库，没有则调 baostock API）
     all_codes = client.get_all_codes()
     print(f'总股票: {len(all_codes)}')
+    
+    if not all_codes:
+        print('无法获取股票列表，请检查 baostock 连接')
+        return
 
     # 获取已同步的股票
     result = client.db.client.query('SELECT DISTINCT sec_code FROM daily_kline')
