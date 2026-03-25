@@ -86,8 +86,8 @@ class StarlightSyncManager:
         # 1.2 交易日历
         logger.info("1.2 同步交易日历...")
         try:
-            # get_calendar 需要 security_type 参数
-            calendar = self.client.get_calendar(security_type="EXTRA_STOCK_A")
+            # get_calendar 的参数是 data_type 和 market
+            calendar = self.client.get_calendar(data_type="str", market="SH")
             df = pd.DataFrame({"trade_date": calendar})
             df["trade_date"] = pd.to_datetime(df["trade_date"])
             
@@ -198,10 +198,15 @@ class StarlightSyncManager:
             # 增量同步：查询数据库中最新的日期
             latest_date = self.db.get_latest_date("kline_daily", "trade_time")
             
-            if latest_date:
+            if latest_date and latest_date != "None":
                 # 从最新日期开始同步（往前推1天以防遗漏）
-                default_start_date = datetime.strptime(latest_date[:10], "%Y-%m-%d") - timedelta(days=1)
-                logger.info(f"✓ 增量同步模式，从最新日期 {latest_date[:10]} 开始")
+                try:
+                    default_start_date = datetime.strptime(latest_date[:10], "%Y-%m-%d") - timedelta(days=1)
+                    logger.info(f"✓ 增量同步模式，从最新日期 {latest_date[:10]} 开始")
+                except (ValueError, TypeError):
+                    # 如果日期格式有问题，默认获取最近30天
+                    default_start_date = end_date - timedelta(days=30)
+                    logger.info("⚠ 最新日期格式异常，默认获取最近30天数据")
             else:
                 # 如果查不到最新日期，默认获取最近30天
                 default_start_date = end_date - timedelta(days=30)
@@ -209,6 +214,11 @@ class StarlightSyncManager:
         
         begin_date_int = int(default_start_date.strftime("%Y%m%d"))
         end_date_int = int(end_date.strftime("%Y%m%d"))
+        
+        # 验证日期参数
+        if not begin_date_int or not end_date_int:
+            logger.error(f"K线同步日期参数无效: begin_date_int={begin_date_int}, end_date_int={end_date_int}")
+            return
         
         logger.info(f"时间范围: {begin_date_int} - {end_date_int}")
         
@@ -292,15 +302,24 @@ class StarlightSyncManager:
             # 增量同步：查询数据库中最新的日期
             latest_date = self.db.get_latest_date("snapshot", "time")
             
-            if latest_date:
-                default_start_date = datetime.strptime(latest_date[:10], "%Y-%m-%d") - timedelta(days=1)
-                logger.info(f"✓ 增量同步模式，从最新日期 {latest_date[:10]} 开始")
+            if latest_date and latest_date != "None":
+                try:
+                    default_start_date = datetime.strptime(latest_date[:10], "%Y-%m-%d") - timedelta(days=1)
+                    logger.info(f"✓ 增量同步模式，从最新日期 {latest_date[:10]} 开始")
+                except (ValueError, TypeError):
+                    default_start_date = end_date - timedelta(days=30)
+                    logger.info("⚠ 最新日期格式异常，默认获取最近30天数据")
             else:
                 default_start_date = end_date - timedelta(days=30)
                 logger.info("⚠ 未找到最新日期，默认获取最近30天数据")
         
         begin_date_int = int(default_start_date.strftime("%Y%m%d"))
         end_date_int = int(end_date.strftime("%Y%m%d"))
+        
+        # 验证日期参数
+        if not begin_date_int or not end_date_int:
+            logger.error(f"快照同步日期参数无效: begin_date_int={begin_date_int}, end_date_int={end_date_int}")
+            return
         
         logger.info(f"时间范围: {begin_date_int} - {end_date_int}")
         
