@@ -165,7 +165,7 @@ class StarlightScheduler(StarlightSyncSupport):
             stock_basic = self._fetch_by_code_batches(
                 self.client.get_stock_basic,
                 code_list,
-                batch_size=1,
+                batch_size=50,
                 sleep_seconds=0.02,
                 checkpoint_key="scheduler.basic.stock_basic",
             )
@@ -188,7 +188,7 @@ class StarlightScheduler(StarlightSyncSupport):
             factor_frames = []
             for batch_index, batch_codes in self._iter_batches(
                 code_list,
-                batch_size=1,
+                batch_size=50,
                 checkpoint_key="scheduler.basic.backward_factor",
             ):
                 backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
@@ -213,7 +213,7 @@ class StarlightScheduler(StarlightSyncSupport):
             factor_frames = []
             for batch_index, batch_codes in self._iter_batches(
                 code_list,
-                batch_size=1,
+                batch_size=50,
                 checkpoint_key="scheduler.basic.adj_factor",
             ):
                 adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
@@ -383,7 +383,7 @@ class StarlightScheduler(StarlightSyncSupport):
                 data = self._fetch_by_code_batches(
                     method,
                     code_list,
-                    batch_size=1,
+                    batch_size=20,
                     sleep_seconds=0.02,
                     checkpoint_key=f"scheduler.financial.{data_type}",
                     is_local=(not is_first_sync),
@@ -470,7 +470,7 @@ class StarlightScheduler(StarlightSyncSupport):
                 data = self._fetch_by_code_batches(
                     method,
                     code_list,
-                    batch_size=1,
+                    batch_size=20,
                     sleep_seconds=0.02,
                     checkpoint_key=f"scheduler.holder.{data_type}",
                     is_local=(not is_first_sync),
@@ -543,7 +543,7 @@ class StarlightScheduler(StarlightSyncSupport):
             dragon_tiger = self._fetch_by_code_batches(
                 self.client.get_long_hu_bang,
                 code_list,
-                batch_size=1,
+                batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="scheduler.other.dragon_tiger",
                 is_local=(not is_first_sync),
@@ -569,7 +569,7 @@ class StarlightScheduler(StarlightSyncSupport):
             block_trade = self._fetch_by_code_batches(
                 self.client.get_block_trading,
                 code_list,
-                batch_size=1,
+                batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="scheduler.other.block_trade",
                 is_local=(not is_first_sync),

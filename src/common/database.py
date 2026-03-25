@@ -104,6 +104,21 @@ class ClickHouseManager:
             ) ENGINE = ReplacingMergeTree(updated_at)
             ORDER BY data_type
         """)
+
+        # 表级同步状态表
+        self.client.command("""
+            CREATE TABLE IF NOT EXISTS table_sync_status (
+                table_name String,
+                last_sync_time Nullable(DateTime),
+                last_success_time Nullable(DateTime),
+                record_count UInt64 DEFAULT 0,
+                latest_date Nullable(String),
+                status String DEFAULT 'pending',
+                error_message Nullable(String),
+                updated_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(updated_at)
+            ORDER BY table_name
+        """)
         
         # 每日数据汇总表
         self.client.command("""
@@ -161,6 +176,11 @@ class ClickHouseManager:
         # 插入数据
         self.client.insert_df(table_name, df)
         logger.info(f"插入 {len(df)} 条记录到 {table_name}")
+        self.update_table_sync_status(
+            table_name=table_name,
+            success=True,
+            status="success",
+        )
     
     def _create_table_from_df(self, df: pd.DataFrame, table_name: str):
         """从 DataFrame 自动创建表"""
@@ -351,6 +371,13 @@ class ClickHouseManager:
             date_column: 日期列（用于增量判断）
         """
         if df.empty:
+            if self.table_exists(table_name):
+                self.update_table_sync_status(
+                    table_name=table_name,
+                    success=True,
+                    date_column=date_column,
+                    status="noop",
+                )
             return
         
         # 获取最新日期
@@ -363,6 +390,12 @@ class ClickHouseManager:
                 
                 if df.empty:
                     logger.info(f"{table_name} 无新数据需要更新")
+                    self.update_table_sync_status(
+                        table_name=table_name,
+                        success=True,
+                        date_column=date_column,
+                        status="noop",
+                    )
                     return
         
         # 如果表不存在，创建表
@@ -373,6 +406,75 @@ class ClickHouseManager:
         # 使用去重插入
         self.insert_dataframe(df, table_name, if_exists="append", unique_keys=key_columns)
         logger.info(f"增量更新完成，插入 {len(df)} 条新记录到 {table_name}")
+        self.update_table_sync_status(
+            table_name=table_name,
+            success=True,
+            date_column=date_column,
+            status="success",
+        )
+
+    def update_table_sync_status(
+        self,
+        table_name: str,
+        success: bool,
+        date_column: Optional[str] = None,
+        status: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ):
+        """更新表级同步状态。"""
+        now = datetime.now()
+        table_exists = self.table_exists(table_name)
+        record_count = self.get_table_count(table_name) if table_exists else 0
+        latest_date = self.get_latest_date(table_name, date_column) if table_exists and date_column else None
+        final_status = status or ("success" if success else "failed")
+
+        self.client.insert('table_sync_status', [[
+            table_name,
+            now,
+            now if success else None,
+            record_count,
+            latest_date,
+            final_status,
+            error_message,
+            now,
+        ]], column_names=[
+            'table_name',
+            'last_sync_time',
+            'last_success_time',
+            'record_count',
+            'latest_date',
+            'status',
+            'error_message',
+            'updated_at',
+        ])
+
+    def get_table_sync_status(self, table_name: Optional[str] = None) -> Union[List[Dict], Dict]:
+        """获取表级同步状态。"""
+        if table_name:
+            result = self.client.query(f"""
+                SELECT * FROM table_sync_status
+                WHERE table_name = '{table_name}'
+                ORDER BY updated_at DESC
+                LIMIT 1
+            """)
+            if result.result_rows:
+                row = result.result_rows[0]
+                return {
+                    "table_name": row[0],
+                    "last_sync_time": row[1],
+                    "last_success_time": row[2],
+                    "record_count": row[3],
+                    "latest_date": row[4],
+                    "status": row[5],
+                    "error_message": row[6],
+                }
+            return {}
+
+        df = self.client.query_df("""
+            SELECT * FROM table_sync_status
+            ORDER BY updated_at DESC
+        """)
+        return df.to_dict(orient='records')
     
     def backup(self, backup_path: Optional[str] = None):
         """备份数据库（导出为 CSV）"""

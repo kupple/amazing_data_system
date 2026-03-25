@@ -131,7 +131,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             stock_basic = self._fetch_by_code_batches(
                 self.client.get_stock_basic,
                 code_list,
-                batch_size=1,
+                batch_size=50,
                 sleep_seconds=0.02,
                 checkpoint_key="sync_basic.stock_basic",
             )
@@ -153,7 +153,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             factor_frames = []
             for batch_index, batch_codes in self._iter_batches(
                 code_list,
-                batch_size=1,
+                batch_size=50,
                 checkpoint_key="sync_basic.backward_factor",
             ):
                 backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
@@ -178,7 +178,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             factor_frames = []
             for batch_index, batch_codes in self._iter_batches(
                 code_list,
-                batch_size=1,
+                batch_size=50,
                 checkpoint_key="sync_basic.adj_factor",
             ):
                 adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
@@ -463,7 +463,7 @@ class StarlightSyncManager(StarlightSyncSupport):
                 data = self._fetch_by_code_batches(
                     method,
                     all_codes,
-                    batch_size=1,
+                    batch_size=20,
                     sleep_seconds=0.02,
                     checkpoint_key=f"sync_financial.{data_type}",
                     is_local=(not is_first_sync),
@@ -536,7 +536,7 @@ class StarlightSyncManager(StarlightSyncSupport):
                 data = self._fetch_by_code_batches(
                     method,
                     all_codes,
-                    batch_size=1,
+                    batch_size=20,
                     sleep_seconds=0.02,
                     checkpoint_key=f"sync_holder.{data_type}",
                     is_local=(not is_first_sync),
@@ -594,7 +594,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             margin_detail = self._fetch_by_code_batches(
                 self.client.get_margin_detail,
                 all_codes,
-                batch_size=1,
+                batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="sync_other.margin_detail",
                 is_local=(not is_first_sync),
@@ -624,7 +624,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             dragon_tiger = self._fetch_by_code_batches(
                 self.client.get_long_hu_bang,
                 all_codes,
-                batch_size=1,
+                batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="sync_other.dragon_tiger",
                 is_local=(not is_first_sync),
@@ -647,7 +647,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             block_trade = self._fetch_by_code_batches(
                 self.client.get_block_trading,
                 all_codes,
-                batch_size=1,
+                batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="sync_other.block_trade",
                 is_local=(not is_first_sync),
@@ -670,7 +670,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             equity_pledge = self._fetch_by_code_batches(
                 self.client.get_equity_pledge_freeze,
                 all_codes,
-                batch_size=1,
+                batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="sync_other.equity_pledge_freeze",
                 is_local=(not is_first_sync),
@@ -699,7 +699,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             equity_restricted = self._fetch_by_code_batches(
                 self.client.get_equity_restricted,
                 all_codes,
-                batch_size=1,
+                batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="sync_other.equity_restricted",
                 is_local=(not is_first_sync),
@@ -728,7 +728,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             dividend = self._fetch_by_code_batches(
                 self.client.get_dividend,
                 all_codes,
-                batch_size=1,
+                batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="sync_other.dividend",
                 is_local=(not is_first_sync),
@@ -750,7 +750,7 @@ class StarlightSyncManager(StarlightSyncSupport):
             right_issue = self._fetch_by_code_batches(
                 self.client.get_right_issue,
                 all_codes,
-                batch_size=1,
+                batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="sync_other.right_issue",
                 is_local=(not is_first_sync),
@@ -1180,14 +1180,14 @@ class StarlightSyncManager(StarlightSyncSupport):
         logger.info("\n" + "=" * 60)
         logger.info("同步状态汇总")
         logger.info("=" * 60)
-        
-        tables = self.db.get_tables()
-        
-        status = {}
-        for table in tables:
-            count = self.db.get_table_count(table)
-            if count > 0:
-                status[table] = count
+
+        raw_status = self.db.get_table_sync_status()
+        status_map = {}
+        if isinstance(raw_status, list):
+            for item in raw_status:
+                table_name = item.get("table_name")
+                if table_name and table_name not in status_map:
+                    status_map[table_name] = item
         
         # 按类型分组显示
         categories = {
@@ -1209,14 +1209,18 @@ class StarlightSyncManager(StarlightSyncSupport):
         
         for category, table_list in categories.items():
             logger.info(f"\n{category}:")
-            category_tables = [t for t in table_list if t in status]
+            category_tables = [t for t in table_list if t in status_map]
             if category_tables:
                 for table in category_tables:
-                    logger.info(f"  - {table}: {status[table]:,} 条")
+                    item = status_map[table]
+                    logger.info(
+                        f"  - {table}: {item.get('record_count', 0):,} 条, "
+                        f"状态={item.get('status')}, 最新日期={item.get('latest_date')}"
+                    )
             else:
                 logger.info("  (无数据)")
         
-        return status
+        return status_map
 
 
 def main():
