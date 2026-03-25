@@ -768,6 +768,15 @@ def _normalize_amazingdata_method(method_name: str) -> Optional[str]:
     return None
 
 
+def _unwrap_retry_method(method: Any) -> Any:
+    """优先使用被 retry 装饰前的原始方法，避免 API 层重复重试。"""
+    wrapped = getattr(method, "__wrapped__", None)
+    bound_self = getattr(method, "__self__", None)
+    if wrapped is not None and bound_self is not None:
+        return wrapped.__get__(bound_self, type(bound_self))
+    return method
+
+
 @app.post("/api/amazingdata/call")
 async def call_amazingdata_method(request: AmazingDataRequest):
     """直接调用 AmazingData 方法"""
@@ -795,7 +804,8 @@ async def call_amazingdata_method(request: AmazingDataRequest):
             )
 
         method = getattr(client, normalized_method)
-        if not callable(method):
+        raw_method = _unwrap_retry_method(method)
+        if not callable(raw_method):
             return _amazingdata_error_response(
                 status_code=400,
                 message="调用失败",
@@ -803,7 +813,7 @@ async def call_amazingdata_method(request: AmazingDataRequest):
             )
 
         try:
-            inspect.signature(method).bind(**request.parameters)
+            inspect.signature(raw_method).bind(**request.parameters)
         except TypeError as e:
             return _amazingdata_error_response(
                 status_code=400,
@@ -816,7 +826,7 @@ async def call_amazingdata_method(request: AmazingDataRequest):
             f"normalized_method={normalized_method}, parameters={request.parameters}"
         )
         try:
-            result = await run_in_threadpool(method, **request.parameters)
+            result = await run_in_threadpool(raw_method, **request.parameters)
         except TypeError as e:
             return _amazingdata_error_response(
                 status_code=400,
