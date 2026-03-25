@@ -771,10 +771,13 @@ def _normalize_amazingdata_method(method_name: str) -> Optional[str]:
 def _normalize_amazingdata_parameters(method_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
     """按文档习惯归一化请求参数，避免把无意义的默认值传给 SDK。"""
     normalized = dict(parameters)
+    today_int = int(datetime.now().strftime("%Y%m%d"))
 
     if method_name == "query_kline":
-        if normalized.get("period") is None:
-            normalized["period"] = 1440
+        # SDK 直连日线查询可省略 period，强制传 1440 反而会触发兼容问题。
+        period = normalized.get("period")
+        if period in (None, "", "1440", 1440, "day", "daily", "1d", "D", "DAY"):
+            normalized.pop("period", None)
         if normalized.get("begin_time") in (None, 0, "0", ""):
             normalized.pop("begin_time", None)
         if normalized.get("end_time") in (None, 0, "0", ""):
@@ -785,6 +788,12 @@ def _normalize_amazingdata_parameters(method_name: str, parameters: Dict[str, An
             normalized.pop("begin_time", None)
         if normalized.get("end_time") in (None, 0, "0", ""):
             normalized.pop("end_time", None)
+
+    if method_name in {"get_industry_weight", "get_industry_daily"}:
+        if normalized.get("end_date") in (None, 0, "0", ""):
+            normalized["end_date"] = today_int
+        if normalized.get("begin_date") in (None, 0, "0", ""):
+            normalized["begin_date"] = normalized["end_date"]
 
     return normalized
 

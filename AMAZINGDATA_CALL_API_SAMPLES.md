@@ -239,8 +239,7 @@ Content-Type: application/json
   "parameters": {
     "code_list": ["000001.SZ"],
     "begin_date": 20240101,
-    "end_date": 20240131,
-    "period": 1440
+    "end_date": 20240131
   }
 }
 ```
@@ -534,7 +533,9 @@ Content-Type: application/json
   "method": "get_industry_weight",
   "parameters": {
     "code_list": ["851783.SI"],
-    "is_local": false
+    "is_local": false,
+    "begin_date": 20240101,
+    "end_date": 20240131
   }
 }
 ```
@@ -546,7 +547,9 @@ Content-Type: application/json
   "method": "get_industry_daily",
   "parameters": {
     "code_list": ["851783.SI"],
-    "is_local": false
+    "is_local": false,
+    "begin_date": 20240101,
+    "end_date": 20240131
   }
 }
 ```

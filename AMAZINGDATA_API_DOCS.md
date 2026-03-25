@@ -101,8 +101,7 @@ curl -X POST "http://localhost:8000/api/amazingdata/call" \
     "parameters": {
       "code_list": ["000001.SZ"],
       "begin_date": 20240101,
-      "end_date": 20241231,
-      "period": 1440
+      "end_date": 20241231
     }
   }'
 ```
@@ -227,6 +226,7 @@ curl -X POST "http://localhost:8000/api/amazingdata/call" \
   - `1440` - 日线
   - `10080` - 周线
   - `43200` - 月线
+  - 日线查询可直接省略 `period`
 
 ### 市场参数
 - `market`: 市场代码
@@ -278,8 +278,7 @@ print(f"获取到 {result['total']} 只股票")
 result = call_amazingdata("query_kline", {
     "code_list": ["000001.SZ"],
     "begin_date": 20240101,
-    "end_date": 20241231,
-    "period": 1440
+    "end_date": 20241231
 })
 print(f"获取到K线数据: {len(result['data']['000001.SZ'])} 条")
 ```

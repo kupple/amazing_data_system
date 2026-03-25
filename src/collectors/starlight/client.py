@@ -90,6 +90,30 @@ def _normalize_legacy_frequency(freq: str) -> str:
     return f"{num}{mapping[unit]}"
 
 
+def _normalize_market_period(period: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
+    """将日线别名归一化为 SDK 的默认查询方式，其它周期保持原样。"""
+    if period is None:
+        return None
+
+    if isinstance(period, str):
+        cleaned = period.strip()
+        if not cleaned:
+            return None
+
+        lowered = cleaned.lower()
+        if lowered in {"d", "1d", "day", "daily"}:
+            return None
+        if cleaned.isdigit():
+            period = int(cleaned)
+        else:
+            return cleaned
+
+    if period == 1440:
+        return None
+
+    return period
+
+
 _patch_pandas_frequency_aliases()
 
 
@@ -387,17 +411,17 @@ class AmazingDataClient:
 
     @retry(max_attempts=3, data_type="kline")
     def query_kline(self, code_list: List[str], begin_date: int, end_date: int,
-                    period: Optional[int] = 1440, begin_time: Optional[int] = None,
+                    period: Optional[Union[int, str]] = None, begin_time: Optional[int] = None,
                     end_time: Optional[int] = None) -> Dict:
         """3.5.4.2 历史K线"""
-        period = 1440 if period is None else period
+        normalized_period = _normalize_market_period(period)
         try:
             return self._call_market_method(
                 self._market.query_kline,
                 code_list=code_list,
                 begin_date=begin_date,
                 end_date=end_date,
-                period=period,
+                period=normalized_period,
                 begin_time=begin_time,
                 end_time=end_time
             )
@@ -409,8 +433,8 @@ class AmazingDataClient:
                 "begin_date": begin_date,
                 "end_date": end_date,
             }
-            if period not in (None, 1440):
-                fallback_kwargs["period"] = period
+            if normalized_period is not None:
+                fallback_kwargs["period"] = normalized_period
             return self._market.query_kline(code_list, **fallback_kwargs)
 
     # ========== 3.5.5 财务数据 (InfoData) ==========

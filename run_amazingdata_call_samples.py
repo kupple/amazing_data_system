@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 from urllib import error, request
 
 
-DEFAULT_URL = "http://100.93.115.99:8000/api/amazingdata/call"
+DEFAULT_URL = "http://192.168.2.32:8000/api/amazingdata/call"
 DEFAULT_DOC = Path(__file__).resolve().parent / "AMAZINGDATA_CALL_API_SAMPLES.md"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "tmp" / "amazingdata_call_reports"
 
