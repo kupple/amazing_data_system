@@ -149,7 +149,7 @@ class StarlightSyncSupport:
 
         long_df = normalized.stack().rename(value_column).reset_index()
         long_df.columns = ["date", "code", value_column]
-        long_df["date"] = pd.to_datetime(long_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        long_df["date"] = pd.to_datetime(long_df["date"], errors="coerce").dt.normalize()
         return long_df.dropna(subset=["date"])
 
     @staticmethod

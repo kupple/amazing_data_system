@@ -296,6 +296,11 @@ class ClickHouseManager:
                 normalized[col] = series.map(
                     lambda value: None if pd.isna(value) else str(value)
                 )
+            elif upper_type == "DATE":
+                parsed = pd.to_datetime(series, errors="coerce")
+                if getattr(parsed.dt, "tz", None) is not None:
+                    parsed = parsed.dt.tz_localize(None)
+                normalized[col] = parsed.dt.date
             elif "DATETIME" in upper_type:
                 parsed = pd.to_datetime(series, errors="coerce")
                 if getattr(parsed.dt, "tz", None) is not None:
