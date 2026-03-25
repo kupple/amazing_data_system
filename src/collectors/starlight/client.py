@@ -4,6 +4,7 @@ AmazingData SDK 客户端模块 - 按官方文档实现
 """
 import os
 import re
+import tempfile
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Union
 import numpy as np
@@ -191,6 +192,13 @@ class AmazingDataClient:
         os.makedirs(cache_dir, exist_ok=True)
         return cache_dir.replace("\\", "//") + "//"
 
+    def _build_temp_cache_path(self, cache_name: str) -> str:
+        """为只走远端的查询构造一次性缓存目录，避免读到旧本地缓存。"""
+        parent = os.path.join(os.getcwd(), "tmp", "amazingdata_runtime_cache")
+        os.makedirs(parent, exist_ok=True)
+        cache_dir = tempfile.mkdtemp(prefix=f"{cache_name}_", dir=parent)
+        return cache_dir.replace("\\", "//") + "//"
+
     @staticmethod
     def _is_factor_cache_compat_error(exc: Exception) -> bool:
         message = str(exc)
@@ -340,44 +348,26 @@ class AmazingDataClient:
         """3.5.2.5 复权因子（后复权因子）"""
         if not self._connected:
             self.connect()
-        try:
-            return self._base.get_backward_factor(
-                code_list,
-                local_path=self.local_path,
-                is_local=is_local
-            )
-        except Exception as exc:
-            if not self._is_factor_cache_compat_error(exc):
-                raise
-            clean_path = self._build_clean_cache_path("backward_factor")
-            logger.warning(f"后复权因子缓存兼容失败，改用干净缓存目录重试: {clean_path}")
-            return self._base.get_backward_factor(
-                code_list,
-                local_path=clean_path,
-                is_local=False
-            )
+        temp_path = self._build_temp_cache_path("backward_factor")
+        logger.info(f"后复权因子强制走远端，不读取历史缓存: {temp_path}")
+        return self._base.get_backward_factor(
+            code_list,
+            local_path=temp_path,
+            is_local=False
+        )
 
     @retry(max_attempts=3, data_type="adj_factor")
     def get_adj_factor(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
         """3.5.2.6 复权因子（单次复权因子）"""
         if not self._connected:
             self.connect()
-        try:
-            return self._base.get_adj_factor(
-                code_list,
-                local_path=self.local_path,
-                is_local=is_local
-            )
-        except Exception as exc:
-            if not self._is_factor_cache_compat_error(exc):
-                raise
-            clean_path = self._build_clean_cache_path("adj_factor")
-            logger.warning(f"前复权因子缓存兼容失败，改用干净缓存目录重试: {clean_path}")
-            return self._base.get_adj_factor(
-                code_list,
-                local_path=clean_path,
-                is_local=False
-            )
+        temp_path = self._build_temp_cache_path("adj_factor")
+        logger.info(f"前复权因子强制走远端，不读取历史缓存: {temp_path}")
+        return self._base.get_adj_factor(
+            code_list,
+            local_path=temp_path,
+            is_local=False
+        )
 
     @retry(max_attempts=3, data_type="hist_code_list")
     def get_hist_code_list(self, security_type: str, start_date: int, end_date: int) -> List[str]:

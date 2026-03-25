@@ -201,11 +201,6 @@ class ClickHouseManager:
         # 插入数据
         self.client.insert_df(table_name, df)
         logger.info(f"插入 {len(df)} 条记录到 {table_name}")
-        self.update_table_sync_status(
-            table_name=table_name,
-            success=True,
-            status="success",
-        )
     
     def _create_table_from_df(self, df: pd.DataFrame, table_name: str):
         """从 DataFrame 自动创建表"""
@@ -571,6 +566,29 @@ class ClickHouseManager:
     def get_table_sync_status(self, table_name: Optional[str] = None) -> Union[List[Dict], Dict]:
         """获取表级同步状态。"""
         if table_name:
+            # 优先取今天最近一次 success/noop，避免被稍后的失败或重复 noop 覆盖判断。
+            result = self.client.query(f"""
+                SELECT * FROM table_sync_status
+                WHERE table_name = '{table_name}'
+                  AND toDate(updated_at) = today()
+                  AND status IN ('success', 'noop')
+                ORDER BY
+                  if(status = 'success', 1, 0) DESC,
+                  updated_at DESC
+                LIMIT 1
+            """)
+            if result.result_rows:
+                row = result.result_rows[0]
+                return {
+                    "table_name": row[0],
+                    "last_sync_time": row[1],
+                    "last_success_time": row[2],
+                    "record_count": row[3],
+                    "latest_date": row[4],
+                    "status": row[5],
+                    "error_message": row[6],
+                }
+
             result = self.client.query(f"""
                 SELECT * FROM table_sync_status
                 WHERE table_name = '{table_name}'
