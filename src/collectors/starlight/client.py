@@ -6,6 +6,7 @@ import os
 import re
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Union
+import numpy as np
 import pandas as pd
 
 # SDK 状态检查
@@ -72,6 +73,33 @@ def _patch_pandas_frequency_aliases():
         pass
 
 
+def _patch_pandas_pytables_index_compat():
+    """兼容旧版 pandas/pytables 读取 datetime64[us] 索引失败的情况。"""
+    try:
+        import pandas.io.pytables as pytables
+
+        original_unconvert_index = getattr(pytables, "_unconvert_index", None)
+        if not callable(original_unconvert_index):
+            return
+        if getattr(original_unconvert_index, "_amazingdata_patched", False):
+            return
+
+        def compat_unconvert_index(data, kind, encoding, errors):
+            try:
+                return original_unconvert_index(data, kind, encoding, errors)
+            except ValueError as exc:
+                if isinstance(kind, str) and kind.startswith("datetime64["):
+                    return pd.DatetimeIndex(np.asarray(data).view(kind), copy=False)
+                if isinstance(kind, str) and kind.startswith("timedelta64["):
+                    return pd.TimedeltaIndex(np.asarray(data).view(kind), copy=False)
+                raise exc
+
+        compat_unconvert_index._amazingdata_patched = True
+        pytables._unconvert_index = compat_unconvert_index
+    except Exception:
+        pass
+
+
 def _normalize_legacy_frequency(freq: str) -> str:
     """将 pandas 新版本不兼容的旧频率写法转成新写法。"""
     freq = freq.strip()
@@ -115,6 +143,7 @@ def _normalize_market_period(period: Optional[Union[int, str]]) -> Optional[Unio
 
 
 _patch_pandas_frequency_aliases()
+_patch_pandas_pytables_index_compat()
 
 
 class AmazingDataClient:
