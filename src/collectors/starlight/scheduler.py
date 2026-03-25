@@ -125,7 +125,7 @@ class StarlightScheduler(StarlightSyncSupport):
         
         # 1. 股票代码表（全量替换）
         try:
-            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+            code_list = self._call_client_method(self.client.get_code_list, security_type="EXTRA_STOCK_A")
             df = pd.DataFrame({"code": code_list})
             df["update_time"] = datetime.now()
             
@@ -141,7 +141,7 @@ class StarlightScheduler(StarlightSyncSupport):
         
         # 2. 交易日历（增量）
         try:
-            calendar = self.client.get_calendar()
+            calendar = self._call_client_method(self.client.get_calendar)
             df = pd.DataFrame({"trade_date": calendar})
             df["trade_date"] = pd.to_datetime(df["trade_date"])
             
@@ -161,28 +161,31 @@ class StarlightScheduler(StarlightSyncSupport):
         
         # 3. 证券基础信息（全量替换）
         try:
-            code_list = self.client.get_code_list("EXTRA_STOCK_A")
-            stock_basic = self._fetch_by_code_batches(
+            code_list = self._call_client_method(self.client.get_code_list, security_type="EXTRA_STOCK_A")
+            self.db.execute(f"DROP TABLE IF EXISTS stock_basic")
+            total_rows = 0
+            for batch_index, _, stock_basic in self._iter_code_batch_results(
                 self.client.get_stock_basic,
                 code_list,
                 batch_size=50,
                 sleep_seconds=0.02,
                 checkpoint_key="scheduler.basic.stock_basic",
-            )
-            
-            if not stock_basic.empty:
-                self.db.execute(f"DROP TABLE IF EXISTS stock_basic")
-                self.db.insert_dataframe(stock_basic, "stock_basic")
-                
-                logger.info(f"证券基础信息已更新，共 {len(stock_basic)} 条")
-                results.append({"type": "stock_basic", "success": True, "count": len(stock_basic)})
+            ):
+                if isinstance(stock_basic, pd.DataFrame) and not stock_basic.empty:
+                    self.db.insert_dataframe(stock_basic, "stock_basic")
+                    total_rows += len(stock_basic)
+                self._set_checkpoint("scheduler.basic.stock_basic", batch_index + 1)
+            if total_rows:
+                logger.info(f"证券基础信息已更新，共 {total_rows} 条")
+                results.append({"type": "stock_basic", "success": True, "count": total_rows})
+            self._clear_checkpoint("scheduler.basic.stock_basic")
         except Exception as e:
             logger.error(f"同步证券基础信息失败: {e}")
             results.append({"type": "stock_basic", "success": False, "error": str(e)})
         
         # 4. 复权因子（增量）
         try:
-            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+            code_list = self._call_client_method(self.client.get_code_list, security_type="EXTRA_STOCK_A")
             
             # 后复权因子
             factor_frames = []
@@ -251,7 +254,7 @@ class StarlightScheduler(StarlightSyncSupport):
         
         # 获取股票列表
         try:
-            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+            code_list = self._call_client_method(self.client.get_code_list, security_type="EXTRA_STOCK_A")
             logger.info(f"获取到 {len(code_list)} 只股票")
         except Exception as e:
             logger.error(f"获取股票列表失败: {e}")
@@ -302,7 +305,8 @@ class StarlightScheduler(StarlightSyncSupport):
             
             try:
                 # 获取日K线
-                kline_dict = self.client.query_kline(
+                kline_dict = self._call_client_method(
+                    self.client.query_kline,
                     code_list=batch_codes,
                     begin_date=begin_date_int,
                     end_date=end_date_int
@@ -313,8 +317,10 @@ class StarlightScheduler(StarlightSyncSupport):
                     if not df.empty:
                         # 添加 code 列
                         df = self._lowercase_columns(df)
+                        if "kline_time" in df.columns and "trade_time" not in df.columns:
+                            df = df.rename(columns={"kline_time": "trade_time"})
                         df['code'] = code
-                        time_column = self._find_existing_column(df, ["kline_time", "trade_time", "time"])
+                        time_column = self._find_existing_column(df, ["trade_time", "kline_time", "time"])
                         
                         # 增量插入到统一表
                         self.db.incremental_update(
@@ -352,7 +358,7 @@ class StarlightScheduler(StarlightSyncSupport):
         
         # 获取股票列表
         try:
-            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+            code_list = self._call_client_method(self.client.get_code_list, security_type="EXTRA_STOCK_A")
         except Exception as e:
             logger.error(f"获取股票列表失败: {e}")
             return {"task": "sync_financial_data", "error": str(e)}
@@ -380,52 +386,45 @@ class StarlightScheduler(StarlightSyncSupport):
                 method = getattr(self.client, f"get_{data_type}")
                 
                 # 首次同步强制从服务器获取，后续使用本地缓存
-                data = self._fetch_by_code_batches(
+                total_rows = 0
+                for batch_index, _, data in self._iter_code_batch_results(
                     method,
                     code_list,
                     batch_size=20,
                     sleep_seconds=0.02,
                     checkpoint_key=f"scheduler.financial.{data_type}",
                     is_local=(not is_first_sync),
-                )
-                
-                if isinstance(data, dict):
-                    # 字典格式：按股票分组，合并到统一表
-                    all_data = []
-                    for code, df in data.items():
-                        if not df.empty:
-                            df['market_code'] = code
-                            all_data.append(df)
-                    
-                    if all_data:
-                        merged_df = pd.concat(all_data, ignore_index=True)
-                        # 重命名列为小写
-                        merged_df.columns = [col.lower() for col in merged_df.columns]
-                        
+                ):
+                    if isinstance(data, dict):
+                        all_data = []
+                        for code, df in data.items():
+                            if not df.empty:
+                                df['market_code'] = code
+                                all_data.append(df)
+                        if all_data:
+                            merged_df = pd.concat(all_data, ignore_index=True)
+                            merged_df.columns = [col.lower() for col in merged_df.columns]
+                            self.db.incremental_update(
+                                data_type,
+                                merged_df,
+                                key_columns=["market_code", "reporting_period"],
+                                date_column="reporting_period"
+                            )
+                            total_rows += len(merged_df)
+                    elif isinstance(data, pd.DataFrame) and not data.empty:
+                        data.columns = [col.lower() for col in data.columns]
                         self.db.incremental_update(
                             data_type,
-                            merged_df,
+                            data,
                             key_columns=["market_code", "reporting_period"],
                             date_column="reporting_period"
                         )
-                        
-                        logger.info(f"{name}已更新，共 {len(merged_df)} 条")
-                        results.append({"type": data_type, "success": True, "count": len(merged_df)})
-                    
-                elif isinstance(data, pd.DataFrame) and not data.empty:
-                    # DataFrame 格式：统一表
-                    # 重命名列为小写
-                    data.columns = [col.lower() for col in data.columns]
-                    
-                    self.db.incremental_update(
-                        data_type,
-                        data,
-                        key_columns=["market_code", "reporting_period"],
-                        date_column="reporting_period"
-                    )
-                    
-                    logger.info(f"{name}已更新，共 {len(data)} 条")
-                    results.append({"type": data_type, "success": True, "count": len(data)})
+                        total_rows += len(data)
+                    self._set_checkpoint(f"scheduler.financial.{data_type}", batch_index + 1)
+                if total_rows:
+                    logger.info(f"{name}已更新，共 {total_rows} 条")
+                    results.append({"type": data_type, "success": True, "count": total_rows})
+                self._clear_checkpoint(f"scheduler.financial.{data_type}")
                 
             except Exception as e:
                 logger.error(f"同步{name}失败: {e}")
@@ -444,7 +443,7 @@ class StarlightScheduler(StarlightSyncSupport):
         
         # 获取股票列表
         try:
-            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+            code_list = self._call_client_method(self.client.get_code_list, security_type="EXTRA_STOCK_A")
         except Exception as e:
             logger.error(f"获取股票列表失败: {e}")
             return {"task": "sync_holder_data", "error": str(e)}
@@ -467,27 +466,28 @@ class StarlightScheduler(StarlightSyncSupport):
         for data_type, name, key_columns in holder_types:
             try:
                 method = getattr(self.client, f"get_{data_type}")
-                data = self._fetch_by_code_batches(
+                total_rows = 0
+                for batch_index, _, data in self._iter_code_batch_results(
                     method,
                     code_list,
                     batch_size=20,
                     sleep_seconds=0.02,
                     checkpoint_key=f"scheduler.holder.{data_type}",
                     is_local=(not is_first_sync),
-                )
-                
-                if isinstance(data, pd.DataFrame) and not data.empty:
-                    # 重命名列为小写
-                    data.columns = [col.lower() for col in data.columns]
-                    
-                    self.db.incremental_update(
-                        data_type,
-                        data,
-                        key_columns=key_columns
-                    )
-                    
-                    logger.info(f"{name}已更新，共 {len(data)} 条")
-                    results.append({"type": data_type, "success": True, "count": len(data)})
+                ):
+                    if isinstance(data, pd.DataFrame) and not data.empty:
+                        data.columns = [col.lower() for col in data.columns]
+                        self.db.incremental_update(
+                            data_type,
+                            data,
+                            key_columns=key_columns
+                        )
+                        total_rows += len(data)
+                    self._set_checkpoint(f"scheduler.holder.{data_type}", batch_index + 1)
+                if total_rows:
+                    logger.info(f"{name}已更新，共 {total_rows} 条")
+                    results.append({"type": data_type, "success": True, "count": total_rows})
+                self._clear_checkpoint(f"scheduler.holder.{data_type}")
                 
             except Exception as e:
                 logger.error(f"同步{name}失败: {e}")
@@ -521,7 +521,7 @@ class StarlightScheduler(StarlightSyncSupport):
         
         # 1. 融资融券汇总
         try:
-            margin_summary = self.client.get_margin_summary(is_local=(not is_first_sync))
+            margin_summary = self._call_client_method(self.client.get_margin_summary, is_local=(not is_first_sync))
             if not margin_summary.empty:
                 # 重命名列为小写
                 margin_summary.columns = [col.lower() for col in margin_summary.columns]
@@ -540,52 +540,58 @@ class StarlightScheduler(StarlightSyncSupport):
         
         # 2. 龙虎榜
         try:
-            dragon_tiger = self._fetch_by_code_batches(
+            total_rows = 0
+            for batch_index, _, dragon_tiger in self._iter_code_batch_results(
                 self.client.get_long_hu_bang,
                 code_list,
                 batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="scheduler.other.dragon_tiger",
                 is_local=(not is_first_sync),
-            )
-            if not dragon_tiger.empty:
-                # 重命名列为小写
-                dragon_tiger.columns = [col.lower() for col in dragon_tiger.columns]
-                
-                self.db.incremental_update(
-                    "dragon_tiger",
-                    dragon_tiger,
-                    key_columns=["market_code", "trade_date", "trader_name"],
-                    date_column="trade_date"
-                )
-                logger.info(f"龙虎榜已更新，共 {len(dragon_tiger)} 条")
-                results.append({"type": "dragon_tiger", "success": True, "count": len(dragon_tiger)})
+            ):
+                if isinstance(dragon_tiger, pd.DataFrame) and not dragon_tiger.empty:
+                    dragon_tiger.columns = [col.lower() for col in dragon_tiger.columns]
+                    self.db.incremental_update(
+                        "dragon_tiger",
+                        dragon_tiger,
+                        key_columns=["market_code", "trade_date", "trader_name"],
+                        date_column="trade_date"
+                    )
+                    total_rows += len(dragon_tiger)
+                self._set_checkpoint("scheduler.other.dragon_tiger", batch_index + 1)
+            if total_rows:
+                logger.info(f"龙虎榜已更新，共 {total_rows} 条")
+                results.append({"type": "dragon_tiger", "success": True, "count": total_rows})
+            self._clear_checkpoint("scheduler.other.dragon_tiger")
         except Exception as e:
             logger.error(f"同步龙虎榜失败: {e}")
             results.append({"type": "dragon_tiger", "success": False, "error": str(e)})
         
         # 3. 大宗交易
         try:
-            block_trade = self._fetch_by_code_batches(
+            total_rows = 0
+            for batch_index, _, block_trade in self._iter_code_batch_results(
                 self.client.get_block_trading,
                 code_list,
                 batch_size=20,
                 sleep_seconds=0.02,
                 checkpoint_key="scheduler.other.block_trade",
                 is_local=(not is_first_sync),
-            )
-            if not block_trade.empty:
-                # 重命名列为小写
-                block_trade.columns = [col.lower() for col in block_trade.columns]
-                
-                self.db.incremental_update(
-                    "block_trade",
-                    block_trade,
-                    key_columns=["market_code", "trade_date"],
-                    date_column="trade_date"
-                )
-                logger.info(f"大宗交易已更新，共 {len(block_trade)} 条")
-                results.append({"type": "block_trade", "success": True, "count": len(block_trade)})
+            ):
+                if isinstance(block_trade, pd.DataFrame) and not block_trade.empty:
+                    block_trade.columns = [col.lower() for col in block_trade.columns]
+                    self.db.incremental_update(
+                        "block_trade",
+                        block_trade,
+                        key_columns=["market_code", "trade_date"],
+                        date_column="trade_date"
+                    )
+                    total_rows += len(block_trade)
+                self._set_checkpoint("scheduler.other.block_trade", batch_index + 1)
+            if total_rows:
+                logger.info(f"大宗交易已更新，共 {total_rows} 条")
+                results.append({"type": "block_trade", "success": True, "count": total_rows})
+            self._clear_checkpoint("scheduler.other.block_trade")
         except Exception as e:
             logger.error(f"同步大宗交易失败: {e}")
             results.append({"type": "block_trade", "success": False, "error": str(e)})

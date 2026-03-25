@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 import clickhouse_connect
 import pandas as pd
-from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_float_dtype, is_integer_dtype
+from pandas.api.types import (
+    is_bool_dtype,
+    is_datetime64_any_dtype,
+    is_float_dtype,
+    is_integer_dtype,
+    is_object_dtype,
+    is_string_dtype,
+)
 from src.common.config import config
 from src.common.logger import logger
 from src.common.models import DataSource
@@ -119,6 +126,21 @@ class ClickHouseManager:
             ) ENGINE = ReplacingMergeTree(updated_at)
             ORDER BY table_name
         """)
+
+        # 同步错误日志表
+        self.client.command("""
+            CREATE TABLE IF NOT EXISTS sync_error_logs (
+                id UInt64,
+                scope String,
+                method_name Nullable(String),
+                table_name Nullable(String),
+                batch_codes Nullable(String),
+                error_message String,
+                traceback Nullable(String),
+                created_at DateTime DEFAULT now()
+            ) ENGINE = MergeTree()
+            ORDER BY (scope, created_at, id)
+        """)
         
         # 每日数据汇总表
         self.client.command("""
@@ -159,6 +181,8 @@ class ClickHouseManager:
             # 自动创建表
             self._create_table_from_df(df, table_name)
             logger.info(f"创建表 {table_name}")
+        else:
+            self._ensure_table_schema(table_name, df)
         
         if unique_keys and if_exists == "append":
             # 增量插入，去重
@@ -186,16 +210,7 @@ class ClickHouseManager:
         """从 DataFrame 自动创建表"""
         columns = []
         for col, dtype in df.dtypes.items():
-            if is_datetime64_any_dtype(dtype):
-                ch_type = 'DateTime'
-            elif is_integer_dtype(dtype):
-                ch_type = 'Int64'
-            elif is_float_dtype(dtype):
-                ch_type = 'Float64'
-            elif is_bool_dtype(dtype):
-                ch_type = 'UInt8'
-            else:
-                ch_type = 'String'
+            ch_type = self._infer_clickhouse_type(dtype)
             columns.append(f"`{col}` {ch_type}")
         
         columns_str = ", ".join(columns)
@@ -212,6 +227,37 @@ class ClickHouseManager:
         
         self.client.command(create_sql)
 
+    def _infer_clickhouse_type(self, dtype) -> str:
+        if is_datetime64_any_dtype(dtype):
+            return 'DateTime'
+        if is_integer_dtype(dtype):
+            return 'Int64'
+        if is_float_dtype(dtype):
+            return 'Float64'
+        if is_bool_dtype(dtype):
+            return 'UInt8'
+        return 'String'
+
+    def _get_table_columns(self, table_name: str) -> Dict[str, str]:
+        result = self.client.query(f"""
+            SELECT name, type
+            FROM system.columns
+            WHERE database = '{self.database}' AND table = '{table_name}'
+        """)
+        return {row[0]: row[1] for row in result.result_rows}
+
+    def _ensure_table_schema(self, table_name: str, df: pd.DataFrame):
+        """确保表包含 DataFrame 中的所有列。"""
+        existing_columns = self._get_table_columns(table_name)
+        for col, dtype in df.dtypes.items():
+            if col in existing_columns:
+                continue
+            ch_type = self._infer_clickhouse_type(dtype)
+            self.client.command(
+                f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS `{col}` {ch_type}"
+            )
+            logger.info(f"为 {table_name} 自动补充列 `{col}` {ch_type}")
+
     def _normalize_dataframe_for_clickhouse(self, df: pd.DataFrame) -> pd.DataFrame:
         """将 pandas DataFrame 归一化到 ClickHouse 更稳定的类型。"""
         normalized = df.copy()
@@ -223,6 +269,12 @@ class ClickHouseManager:
                 if getattr(parsed.dt, "tz", None) is not None:
                     parsed = parsed.dt.tz_localize(None)
                 normalized[col] = parsed.astype("datetime64[ns]")
+            elif is_object_dtype(series.dtype) or is_string_dtype(series.dtype):
+                normalized[col] = series.map(
+                    lambda value: None
+                    if pd.isna(value)
+                    else str(value)
+                )
 
         return normalized
     
@@ -311,6 +363,39 @@ class ClickHouseManager:
         
         # 更新同步状态
         self.update_sync_status(data_type, success, record_count, error_message)
+
+    def save_sync_error(
+        self,
+        scope: str,
+        error_message: str,
+        method_name: Optional[str] = None,
+        table_name: Optional[str] = None,
+        batch_codes: Optional[List[str]] = None,
+        traceback_text: Optional[str] = None,
+    ):
+        """保存同步错误日志。"""
+        max_id_result = self.client.query("SELECT max(id) FROM sync_error_logs")
+        max_id = max_id_result.result_rows[0][0] if max_id_result.result_rows[0][0] else 0
+        new_id = max_id + 1
+        self.client.insert('sync_error_logs', [[
+            new_id,
+            scope,
+            method_name,
+            table_name,
+            json.dumps(batch_codes, ensure_ascii=False) if batch_codes else None,
+            error_message,
+            traceback_text,
+            datetime.now(),
+        ]], column_names=[
+            'id',
+            'scope',
+            'method_name',
+            'table_name',
+            'batch_codes',
+            'error_message',
+            'traceback',
+            'created_at',
+        ])
     
     def update_sync_status(self, data_type: str, success: bool,
                            record_count: int = 0,

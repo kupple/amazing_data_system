@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -35,6 +36,38 @@ class StarlightSyncSupport:
             if column in df.columns:
                 return column
         raise KeyError(f"未找到可用列，候选列: {candidates}")
+
+    @staticmethod
+    def _unwrap_retry_method(method):
+        wrapped = getattr(method, "__wrapped__", None)
+        bound_self = getattr(method, "__self__", None)
+        if wrapped is not None and bound_self is not None:
+            return wrapped.__get__(bound_self, type(bound_self))
+        return method
+
+    def _call_client_method(self, method, **kwargs):
+        raw_method = self._unwrap_retry_method(method)
+        return raw_method(**kwargs)
+
+    def _log_sync_error(
+        self,
+        scope: str,
+        error: Exception,
+        method_name: Optional[str] = None,
+        table_name: Optional[str] = None,
+        batch_codes: Optional[List[str]] = None,
+    ):
+        try:
+            self.db.save_sync_error(
+                scope=scope,
+                method_name=method_name,
+                table_name=table_name,
+                batch_codes=batch_codes,
+                error_message=str(error),
+                traceback_text=traceback.format_exc(),
+            )
+        except Exception as log_exc:
+            logger.warning(f"写入同步错误日志失败: {log_exc}")
 
     def _get_latest_date_with_fallback(self, table_name: str, candidates: List[str]) -> Optional[str]:
         for column in candidates:
@@ -136,7 +169,7 @@ class StarlightSyncSupport:
                 logger.info(f"从 checkpoint 恢复 {checkpoint_key}，跳过前 {start_index} 个批次")
         return list(enumerate(batches[start_index:], start=start_index))
 
-    def _fetch_by_code_batches(
+    def _iter_code_batch_results(
         self,
         method,
         code_list: List[str],
@@ -145,40 +178,39 @@ class StarlightSyncSupport:
         checkpoint_key: Optional[str] = None,
         **kwargs,
     ):
-        merged_dict = None
-        merged_frames = []
+        """按批请求并逐批返回结果，由调用方决定如何落库。"""
         batches = self._iter_batches(code_list, batch_size=batch_size, checkpoint_key=checkpoint_key)
-
+        raw_method = self._unwrap_retry_method(method)
         for batch_index, batch_codes in batches:
             try:
-                result = method(code_list=batch_codes, **kwargs)
+                result = raw_method(code_list=batch_codes, **kwargs)
             except Exception as exc:
                 logger.warning(f"批量请求失败，codes={batch_codes}: {exc}")
-                break
+                self._log_sync_error(
+                    scope="batch_request",
+                    error=exc,
+                    method_name=getattr(method, "__name__", str(method)),
+                    batch_codes=batch_codes,
+                )
+                if len(batch_codes) <= 1:
+                    raise
+                logger.info(f"批量请求降级为单股票重试，原批次大小={len(batch_codes)}")
+                for code in batch_codes:
+                    try:
+                        single_result = raw_method(code_list=[code], **kwargs)
+                    except Exception as single_exc:
+                        logger.warning(f"单股票请求失败，code={code}: {single_exc}")
+                        self._log_sync_error(
+                            scope="single_request",
+                            error=single_exc,
+                            method_name=getattr(method, "__name__", str(method)),
+                            batch_codes=[code],
+                        )
+                        continue
+                    yield batch_index, [code], single_result
+                continue
 
-            if isinstance(result, dict):
-                if merged_dict is None:
-                    merged_dict = {}
-                for key, value in result.items():
-                    if value is not None:
-                        merged_dict[key] = value
-            elif isinstance(result, pd.DataFrame):
-                if not result.empty:
-                    merged_frames.append(result)
+            yield batch_index, batch_codes, result
 
-            if checkpoint_key:
-                self._set_checkpoint(checkpoint_key, batch_index + 1)
             if sleep_seconds > 0:
                 time.sleep(sleep_seconds)
-
-        if checkpoint_key:
-            completed_batches = len(self._chunk(code_list, batch_size))
-            current = self._load_checkpoints().get(checkpoint_key, 0)
-            if current >= completed_batches:
-                self._clear_checkpoint(checkpoint_key)
-
-        if merged_dict is not None:
-            return merged_dict
-        if merged_frames:
-            return pd.concat(merged_frames, ignore_index=True)
-        return pd.DataFrame()
