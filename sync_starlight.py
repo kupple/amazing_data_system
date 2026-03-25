@@ -74,136 +74,133 @@ class StarlightSyncManager(StarlightSyncSupport):
         
         # 1.1 股票代码表
         logger.info("1.1 同步股票代码表...")
-        try:
-            code_list = self._call_client_method(self.client.get_code_list, security_type="EXTRA_STOCK_A")
-            df = pd.DataFrame({"code": code_list})
-            df["update_time"] = datetime.now()
-            
-            self.db.execute("DROP TABLE IF EXISTS stock_codes")
-            self.db.insert_dataframe(df, "stock_codes")
-            logger.info(f"✓ 股票代码表已更新: {len(df)} 条")
-        except Exception as e:
-            logger.error(f"✗ 同步股票代码表失败: {e}")
+        if not self._should_skip_table_sync("stock_codes"):
+            try:
+                code_list = self._call_client_method(self.client.get_code_list, security_type="EXTRA_STOCK_A")
+                df = pd.DataFrame({"code": code_list})
+                df["update_time"] = datetime.now()
+                self.db.execute("DROP TABLE IF EXISTS stock_codes")
+                self.db.insert_dataframe(df, "stock_codes")
+                logger.info(f"✓ 股票代码表已更新: {len(df)} 条")
+            except Exception as e:
+                logger.error(f"✗ 同步股票代码表失败: {e}")
         
         # 1.2 交易日历
         logger.info("1.2 同步交易日历...")
-        try:
-            # get_calendar 返回日期列表
-            calendar = self._call_client_method(self.client.get_calendar, data_type="str", market="SH")
-            if calendar:
-                logger.info(f"原始数据: {calendar[:5]}, 类型: {[type(x).__name__ for x in calendar[:5]]}")
-                df = pd.DataFrame({"trade_date": calendar})
-                
-                # 尝试多种日期格式解析
-                formats = ["%Y%m%d", "%Y-%m-%d", "%Y/%m/%d", None]
-                for fmt in formats:
-                    try:
-                        df["trade_date"] = pd.to_datetime(df["trade_date"], format=fmt)
-                        logger.info(f"使用格式 {fmt} 解析成功")
-                        break
-                    except Exception as e:
-                        logger.warning(f"格式 {fmt} 解析失败: {e}")
-                        continue
-                
-                logger.info(f"解析后数据: {df['trade_date'].head().tolist()}")
-                
-                # 删除无效日期
-                df = df.dropna(subset=["trade_date"])
-                
-                self.db.incremental_update(
-                    "trading_calendar",
-                    df,
-                    key_columns=["trade_date"],
-                    date_column="trade_date"
-                )
-                logger.info(f"✓ 交易日历已更新: {len(df)} 条")
-            else:
-                logger.warning("交易日历为空，跳过")
-        except Exception as e:
-            logger.error(f"✗ 同步交易日历失败: {e}")
-            import traceback
-            traceback.print_exc()
+        if not self._should_skip_table_sync("trading_calendar"):
+            try:
+                calendar = self._call_client_method(self.client.get_calendar, data_type="str", market="SH")
+                if calendar:
+                    logger.info(f"原始数据: {calendar[:5]}, 类型: {[type(x).__name__ for x in calendar[:5]]}")
+                    df = pd.DataFrame({"trade_date": calendar})
+                    formats = ["%Y%m%d", "%Y-%m-%d", "%Y/%m/%d", None]
+                    for fmt in formats:
+                        try:
+                            df["trade_date"] = pd.to_datetime(df["trade_date"], format=fmt)
+                            logger.info(f"使用格式 {fmt} 解析成功")
+                            break
+                        except Exception as e:
+                            logger.warning(f"格式 {fmt} 解析失败: {e}")
+                            continue
+                    logger.info(f"解析后数据: {df['trade_date'].head().tolist()}")
+                    df = df.dropna(subset=["trade_date"])
+                    self.db.incremental_update(
+                        "trading_calendar",
+                        df,
+                        key_columns=["trade_date"],
+                        date_column="trade_date"
+                    )
+                    logger.info(f"✓ 交易日历已更新: {len(df)} 条")
+                else:
+                    logger.warning("交易日历为空，跳过")
+            except Exception as e:
+                logger.error(f"✗ 同步交易日历失败: {e}")
+                import traceback
+                traceback.print_exc()
         
         # 1.3 证券基础信息
         logger.info("1.3 同步证券基础信息...")
-        try:
-            code_list = self.get_all_codes()
-            self.db.execute("DROP TABLE IF EXISTS stock_basic")
-            total_rows = 0
-            completed = True
-            for batch_index, _, stock_basic in self._iter_code_batch_results(
-                self.client.get_stock_basic,
-                code_list,
-                batch_size=50,
-                sleep_seconds=0.02,
-                checkpoint_key="sync_basic.stock_basic",
-            ):
-                if isinstance(stock_basic, pd.DataFrame) and not stock_basic.empty:
-                    stock_basic = self._lowercase_columns(stock_basic)
-                    self.db.insert_dataframe(stock_basic, "stock_basic")
-                    total_rows += len(stock_basic)
-                self._set_checkpoint("sync_basic.stock_basic", batch_index + 1)
-            if total_rows:
-                logger.info(f"✓ 证券基础信息已更新: {total_rows} 条")
-            self._clear_checkpoint("sync_basic.stock_basic")
-        except Exception as e:
-            completed = False
-            logger.error(f"✗ 同步证券基础信息失败: {e}")
+        if not self._should_skip_table_sync("stock_basic"):
+            try:
+                code_list = self.get_all_codes()
+                self.db.execute("DROP TABLE IF EXISTS stock_basic")
+                total_rows = 0
+                for batch_index, _, stock_basic in self._iter_code_batch_results(
+                    self.client.get_stock_basic,
+                    code_list,
+                    batch_size=1050,
+                    sleep_seconds=0.02,
+                    checkpoint_key="sync_basic.stock_basic",
+                ):
+                    if isinstance(stock_basic, pd.DataFrame) and not stock_basic.empty:
+                        stock_basic = self._lowercase_columns(stock_basic)
+                        self.db.insert_dataframe(stock_basic, "stock_basic")
+                        total_rows += len(stock_basic)
+                    self._set_checkpoint("sync_basic.stock_basic", batch_index + 1)
+                if total_rows:
+                    logger.info(f"✓ 证券基础信息已更新: {total_rows} 条")
+                self._clear_checkpoint("sync_basic.stock_basic")
+            except Exception as e:
+                logger.error(f"✗ 同步证券基础信息失败: {e}")
         
         # 1.4 复权因子
         logger.info("1.4 同步复权因子...")
+        if self._should_skip_table_sync("backward_factor") and self._should_skip_table_sync("adj_factor"):
+            return
         try:
             code_list = self.get_all_codes()
             
             # 后复权因子 - 当前 SDK 返回 index=日期、columns=代码 的 DataFrame
-            logger.info("  同步后复权因子...")
-            factor_frames = []
-            for batch_index, batch_codes in self._iter_batches(
-                code_list,
-                batch_size=50,
-                checkpoint_key="sync_basic.backward_factor",
-            ):
-                backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
-                reshaped = self._reshape_factor_dataframe(backward_factor, "backward_factor")
-                if not reshaped.empty:
-                    factor_frames.append(reshaped)
-                time.sleep(0.02)
-                self._set_checkpoint("sync_basic.backward_factor", batch_index + 1)
-            merged_df = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
-            if not merged_df.empty:
-                self.db.incremental_update(
-                    "backward_factor",
-                    merged_df,
-                    key_columns=["code", "date"],
-                    date_column="date"
-                )
-                logger.info(f"  ✓ 后复权因子已更新: {len(merged_df)} 条")
-            self._clear_checkpoint("sync_basic.backward_factor")
+            if not self._should_skip_table_sync("backward_factor"):
+                logger.info("  同步后复权因子...")
+                factor_frames = []
+                for batch_index, batch_codes in self._iter_batches(
+                    code_list,
+                    batch_size=50,
+                    checkpoint_key="sync_basic.backward_factor",
+                ):
+                    backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
+                    reshaped = self._reshape_factor_dataframe(backward_factor, "backward_factor")
+                    if not reshaped.empty:
+                        factor_frames.append(reshaped)
+                    time.sleep(0.02)
+                    self._set_checkpoint("sync_basic.backward_factor", batch_index + 1)
+                merged_df = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
+                if not merged_df.empty:
+                    self.db.incremental_update(
+                        "backward_factor",
+                        merged_df,
+                        key_columns=["code", "date"],
+                        date_column="date"
+                    )
+                    logger.info(f"  ✓ 后复权因子已更新: {len(merged_df)} 条")
+                self._clear_checkpoint("sync_basic.backward_factor")
             
             # 前复权因子 - 当前 SDK 返回 index=日期、columns=代码 的 DataFrame
-            logger.info("  同步前复权因子...")
-            factor_frames = []
-            for batch_index, batch_codes in self._iter_batches(
-                code_list,
-                batch_size=50,
-                checkpoint_key="sync_basic.adj_factor",
-            ):
-                adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
-                reshaped = self._reshape_factor_dataframe(adj_factor, "adj_factor")
-                if not reshaped.empty:
-                    factor_frames.append(reshaped)
-                time.sleep(0.02)
-                self._set_checkpoint("sync_basic.adj_factor", batch_index + 1)
-            merged_df = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
-            if not merged_df.empty:
-                self.db.incremental_update(
-                    "adj_factor",
-                    merged_df,
-                    key_columns=["code", "date"],
-                    date_column="date"
-                )
-                logger.info(f"  ✓ 前复权因子已更新: {len(merged_df)} 条")
-            self._clear_checkpoint("sync_basic.adj_factor")
+            if not self._should_skip_table_sync("adj_factor"):
+                logger.info("  同步前复权因子...")
+                factor_frames = []
+                for batch_index, batch_codes in self._iter_batches(
+                    code_list,
+                    batch_size=50,
+                    checkpoint_key="sync_basic.adj_factor",
+                ):
+                    adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
+                    reshaped = self._reshape_factor_dataframe(adj_factor, "adj_factor")
+                    if not reshaped.empty:
+                        factor_frames.append(reshaped)
+                    time.sleep(0.02)
+                    self._set_checkpoint("sync_basic.adj_factor", batch_index + 1)
+                merged_df = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
+                if not merged_df.empty:
+                    self.db.incremental_update(
+                        "adj_factor",
+                        merged_df,
+                        key_columns=["code", "date"],
+                        date_column="date"
+                    )
+                    logger.info(f"  ✓ 前复权因子已更新: {len(merged_df)} 条")
+                self._clear_checkpoint("sync_basic.adj_factor")
                 
         except Exception as e:
             logger.error(f"✗ 同步复权因子失败: {e}")

@@ -104,6 +104,38 @@ class StarlightSyncSupport:
             "end_date": int(end_date.strftime("%Y%m%d")),
         }
 
+    def _should_skip_table_sync(self, table_name: str, force: bool = False) -> bool:
+        """如果该表今天已经同步成功，则跳过。"""
+        if force:
+            return False
+
+        try:
+            status = self.db.get_table_sync_status(table_name)
+        except Exception as exc:
+            logger.warning(f"读取表同步状态失败，table={table_name}: {exc}")
+            return False
+
+        if not isinstance(status, dict) or not status:
+            return False
+
+        if status.get("status") not in {"success", "noop"}:
+            return False
+
+        last_time = status.get("last_success_time") or status.get("last_sync_time")
+        if not last_time:
+            return False
+
+        try:
+            synced_date = pd.to_datetime(last_time).date()
+        except Exception:
+            return False
+
+        today = datetime.now().date()
+        if synced_date == today:
+            logger.info(f"跳过 {table_name}，今日已同步完成")
+            return True
+        return False
+
     @staticmethod
     def _reshape_factor_dataframe(df: pd.DataFrame, value_column: str) -> pd.DataFrame:
         if df is None or df.empty:
