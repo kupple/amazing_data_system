@@ -35,6 +35,76 @@ class StarlightScheduler:
         if self.db is None:
             # 使用 starlight 数据源的数据库
             self.db = get_db("starlight")
+
+    @staticmethod
+    def _lowercase_columns(df: pd.DataFrame) -> pd.DataFrame:
+        normalized = df.copy()
+        normalized.columns = [str(col).lower() for col in normalized.columns]
+        return normalized
+
+    @staticmethod
+    def _find_existing_column(df: pd.DataFrame, candidates: List[str]) -> str:
+        for column in candidates:
+            if column in df.columns:
+                return column
+        raise KeyError(f"未找到可用列，候选列: {candidates}")
+
+    @staticmethod
+    def _iter_batches(items: List[str], batch_size: int = 1):
+        for i in range(0, len(items), batch_size):
+            yield items[i:i + batch_size]
+
+    @staticmethod
+    def _reshape_factor_dataframe(df: pd.DataFrame, value_column: str) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["date", "code", value_column])
+
+        normalized = df.copy()
+        normalized.index = pd.to_datetime(normalized.index, errors="coerce")
+        normalized = normalized[~normalized.index.isna()]
+        normalized.index.name = "date"
+        normalized.columns = [str(col) for col in normalized.columns]
+        long_df = normalized.stack().rename(value_column).reset_index()
+        long_df.columns = ["date", "code", value_column]
+        long_df["date"] = pd.to_datetime(long_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        return long_df.dropna(subset=["date"])
+
+    def _fetch_by_code_batches(
+        self,
+        method,
+        code_list: List[str],
+        batch_size: int = 1,
+        sleep_seconds: float = 0.0,
+        **kwargs,
+    ):
+        merged_dict = None
+        merged_frames = []
+
+        for batch_codes in self._iter_batches(code_list, batch_size=batch_size):
+            try:
+                result = method(code_list=batch_codes, **kwargs)
+            except Exception as exc:
+                logger.warning(f"批量请求失败，codes={batch_codes}: {exc}")
+                continue
+
+            if isinstance(result, dict):
+                if merged_dict is None:
+                    merged_dict = {}
+                for key, value in result.items():
+                    if value is not None:
+                        merged_dict[key] = value
+            elif isinstance(result, pd.DataFrame):
+                if not result.empty:
+                    merged_frames.append(result)
+
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
+        if merged_dict is not None:
+            return merged_dict
+        if merged_frames:
+            return pd.concat(merged_frames, ignore_index=True)
+        return pd.DataFrame()
     
     def start(self):
         """启动调度器"""
@@ -160,7 +230,12 @@ class StarlightScheduler:
         # 3. 证券基础信息（全量替换）
         try:
             code_list = self.client.get_code_list("EXTRA_STOCK_A")
-            stock_basic = self.client.get_stock_basic(code_list)
+            stock_basic = self._fetch_by_code_batches(
+                self.client.get_stock_basic,
+                code_list,
+                batch_size=1,
+                sleep_seconds=0.02,
+            )
             
             if not stock_basic.empty:
                 self.db.execute(f"DROP TABLE IF EXISTS stock_basic")
@@ -177,23 +252,39 @@ class StarlightScheduler:
             code_list = self.client.get_code_list("EXTRA_STOCK_A")
             
             # 后复权因子
-            backward_factor = self.client.get_backward_factor(code_list, is_local=True)
+            factor_frames = []
+            for batch_codes in self._iter_batches(code_list, batch_size=1):
+                backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
+                reshaped = self._reshape_factor_dataframe(backward_factor, "backward_factor")
+                if not reshaped.empty:
+                    factor_frames.append(reshaped)
+                time.sleep(0.02)
+            backward_factor = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
             if not backward_factor.empty:
                 self.db.incremental_update(
                     "backward_factor",
                     backward_factor,
-                    key_columns=["code", "date"]
+                    key_columns=["code", "date"],
+                    date_column="date"
                 )
                 logger.info(f"后复权因子已更新，共 {len(backward_factor)} 条")
                 results.append({"type": "backward_factor", "success": True, "count": len(backward_factor)})
             
             # 前复权因子
-            adj_factor = self.client.get_adj_factor(code_list, is_local=True)
+            factor_frames = []
+            for batch_codes in self._iter_batches(code_list, batch_size=1):
+                adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
+                reshaped = self._reshape_factor_dataframe(adj_factor, "adj_factor")
+                if not reshaped.empty:
+                    factor_frames.append(reshaped)
+                time.sleep(0.02)
+            adj_factor = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
             if not adj_factor.empty:
                 self.db.incremental_update(
                     "adj_factor",
                     adj_factor,
-                    key_columns=["code", "date"]
+                    key_columns=["code", "date"],
+                    date_column="date"
                 )
                 logger.info(f"前复权因子已更新，共 {len(adj_factor)} 条")
                 results.append({"type": "adj_factor", "success": True, "count": len(adj_factor)})
@@ -232,7 +323,14 @@ class StarlightScheduler:
             logger.info("⚠ 检测到首次同步，将获取全部历史数据（从2010年开始）")
         else:
             # 增量同步：查询数据库中最新的日期
-            latest_date = self.db.get_latest_date("kline_daily", "trade_time")
+            latest_date = None
+            for column in ["kline_time", "trade_time", "time"]:
+                try:
+                    latest_date = self.db.get_latest_date("kline_daily", column)
+                except Exception:
+                    latest_date = None
+                if latest_date:
+                    break
             
             if latest_date:
                 # 从最新日期开始同步（往前推1天以防遗漏）
@@ -258,24 +356,23 @@ class StarlightScheduler:
                 kline_dict = self.client.query_kline(
                     code_list=batch_codes,
                     begin_date=begin_date_int,
-                    end_date=end_date_int,
-                    period=1440  # 日线
+                    end_date=end_date_int
                 )
                 
                 # 保存到统一的K线表
                 for code, df in kline_dict.items():
                     if not df.empty:
                         # 添加 code 列
+                        df = self._lowercase_columns(df)
                         df['code'] = code
-                        # 重命名列为小写
-                        df.columns = [col.lower() for col in df.columns]
+                        time_column = self._find_existing_column(df, ["kline_time", "trade_time", "time"])
                         
                         # 增量插入到统一表
                         self.db.incremental_update(
                             "kline_daily",
                             df,
-                            key_columns=["code", "trade_time"],
-                            date_column="trade_time"
+                            key_columns=["code", time_column],
+                            date_column=time_column
                         )
                 
                 logger.info(f"已同步 {i+len(batch_codes)}/{len(code_list)} 只股票的K线数据")
@@ -329,7 +426,13 @@ class StarlightScheduler:
                 method = getattr(self.client, f"get_{data_type}")
                 
                 # 首次同步强制从服务器获取，后续使用本地缓存
-                data = method(code_list=code_list, is_local=(not is_first_sync))
+                data = self._fetch_by_code_batches(
+                    method,
+                    code_list,
+                    batch_size=1,
+                    sleep_seconds=0.02,
+                    is_local=(not is_first_sync),
+                )
                 
                 if isinstance(data, dict):
                     # 字典格式：按股票分组，合并到统一表
@@ -409,7 +512,13 @@ class StarlightScheduler:
         for data_type, name, key_columns in holder_types:
             try:
                 method = getattr(self.client, f"get_{data_type}")
-                data = method(code_list=code_list, is_local=(not is_first_sync))
+                data = self._fetch_by_code_batches(
+                    method,
+                    code_list,
+                    batch_size=1,
+                    sleep_seconds=0.02,
+                    is_local=(not is_first_sync),
+                )
                 
                 if isinstance(data, pd.DataFrame) and not data.empty:
                     # 重命名列为小写
@@ -475,7 +584,13 @@ class StarlightScheduler:
         
         # 2. 龙虎榜
         try:
-            dragon_tiger = self.client.get_long_hu_bang(code_list=code_list, is_local=(not is_first_sync))
+            dragon_tiger = self._fetch_by_code_batches(
+                self.client.get_long_hu_bang,
+                code_list,
+                batch_size=1,
+                sleep_seconds=0.02,
+                is_local=(not is_first_sync),
+            )
             if not dragon_tiger.empty:
                 # 重命名列为小写
                 dragon_tiger.columns = [col.lower() for col in dragon_tiger.columns]
@@ -494,7 +609,13 @@ class StarlightScheduler:
         
         # 3. 大宗交易
         try:
-            block_trade = self.client.get_block_trading(code_list=code_list, is_local=(not is_first_sync))
+            block_trade = self._fetch_by_code_batches(
+                self.client.get_block_trading,
+                code_list,
+                batch_size=1,
+                sleep_seconds=0.02,
+                is_local=(not is_first_sync),
+            )
             if not block_trade.empty:
                 # 重命名列为小写
                 block_trade.columns = [col.lower() for col in block_trade.columns]

@@ -63,6 +63,120 @@ class StarlightSyncManager:
                 logger.warning(f"查询已同步代码失败: {e}")
         
         return synced
+
+    @staticmethod
+    def _lowercase_columns(df: pd.DataFrame) -> pd.DataFrame:
+        """统一列名为小写。"""
+        normalized = df.copy()
+        normalized.columns = [str(col).lower() for col in normalized.columns]
+        return normalized
+
+    @staticmethod
+    def _find_existing_column(df: pd.DataFrame, candidates: List[str]) -> str:
+        """返回 DataFrame 中第一个存在的候选列名。"""
+        for column in candidates:
+            if column in df.columns:
+                return column
+        raise KeyError(f"未找到可用列，候选列: {candidates}")
+
+    def _get_latest_date_with_fallback(self, table_name: str, candidates: List[str]) -> str:
+        """按候选列顺序获取最新日期。"""
+        for column in candidates:
+            try:
+                latest_date = self.db.get_latest_date(table_name, column)
+            except Exception:
+                latest_date = None
+            if latest_date and latest_date != "None":
+                return latest_date
+        return None
+
+    def _build_incremental_date_range(
+        self,
+        table_name: str,
+        date_columns: List[str],
+        first_sync_days: int = 365,
+        fallback_days: int = 30,
+    ) -> Dict[str, int]:
+        """根据已同步数据推导下一次查询的日期范围。"""
+        end_date = datetime.now()
+        if not self.db.table_exists(table_name):
+            start_date = end_date - timedelta(days=first_sync_days)
+        else:
+            latest_date = self._get_latest_date_with_fallback(table_name, date_columns)
+            if latest_date:
+                try:
+                    start_date = datetime.strptime(str(latest_date)[:10], "%Y-%m-%d") - timedelta(days=1)
+                except (TypeError, ValueError):
+                    start_date = end_date - timedelta(days=fallback_days)
+            else:
+                start_date = end_date - timedelta(days=fallback_days)
+
+        return {
+            "begin_date": int(start_date.strftime("%Y%m%d")),
+            "end_date": int(end_date.strftime("%Y%m%d")),
+        }
+
+    @staticmethod
+    def _reshape_factor_dataframe(df: pd.DataFrame, value_column: str) -> pd.DataFrame:
+        """将 index=日期、columns=代码 的复权因子宽表转成长表。"""
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["date", "code", value_column])
+
+        normalized = df.copy()
+        normalized.index = pd.to_datetime(normalized.index, errors="coerce")
+        normalized = normalized[~normalized.index.isna()]
+        normalized.index.name = "date"
+        normalized.columns = [str(col) for col in normalized.columns]
+
+        long_df = normalized.stack().rename(value_column).reset_index()
+        long_df.columns = ["date", "code", value_column]
+        long_df["date"] = pd.to_datetime(long_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        return long_df.dropna(subset=["date"])
+
+    @staticmethod
+    def _iter_batches(items: List[str], batch_size: int = 1):
+        """按批次迭代代码列表。"""
+        for i in range(0, len(items), batch_size):
+            yield items[i:i + batch_size]
+
+    def _fetch_by_code_batches(
+        self,
+        method,
+        code_list: List[str],
+        batch_size: int = 1,
+        sleep_seconds: float = 0.0,
+        **kwargs,
+    ):
+        """按股票分批调用接口，并自动合并 DataFrame / dict 结果。"""
+        merged_dict = None
+        merged_frames = []
+
+        for batch_codes in self._iter_batches(code_list, batch_size=batch_size):
+            try:
+                result = method(code_list=batch_codes, **kwargs)
+            except Exception as exc:
+                logger.warning(f"批量请求失败，codes={batch_codes}: {exc}")
+                continue
+
+            if isinstance(result, dict):
+                if merged_dict is None:
+                    merged_dict = {}
+                for key, value in result.items():
+                    if value is None:
+                        continue
+                    merged_dict[key] = value
+            elif isinstance(result, pd.DataFrame):
+                if not result.empty:
+                    merged_frames.append(result)
+
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
+        if merged_dict is not None:
+            return merged_dict
+        if merged_frames:
+            return pd.concat(merged_frames, ignore_index=True)
+        return pd.DataFrame()
     
     def sync_basic_data(self):
         """同步基础数据"""
@@ -126,7 +240,12 @@ class StarlightSyncManager:
         logger.info("1.3 同步证券基础信息...")
         try:
             code_list = self.get_all_codes()
-            stock_basic = self.client.get_stock_basic(code_list)
+            stock_basic = self._fetch_by_code_batches(
+                self.client.get_stock_basic,
+                code_list,
+                batch_size=1,
+                sleep_seconds=0.02,
+            )
             
             if not stock_basic.empty:
                 self.db.execute("DROP TABLE IF EXISTS stock_basic")
@@ -140,43 +259,43 @@ class StarlightSyncManager:
         try:
             code_list = self.get_all_codes()
             
-            # 后复权因子 - 返回的是 Dict[str, DataFrame]
+            # 后复权因子 - 当前 SDK 返回 index=日期、columns=代码 的 DataFrame
             logger.info("  同步后复权因子...")
-            backward_factor = self.client.get_backward_factor(code_list, is_local=True)
-            if isinstance(backward_factor, dict):
-                all_data = []
-                for code, df in backward_factor.items():
-                    if not df.empty:
-                        df['code'] = code
-                        all_data.append(df)
-                if all_data:
-                    merged_df = pd.concat(all_data, ignore_index=True)
-                    merged_df.columns = [col.lower() for col in merged_df.columns]
-                    self.db.incremental_update(
-                        "backward_factor",
-                        merged_df,
-                        key_columns=["code", "date"]
-                    )
-                    logger.info(f"  ✓ 后复权因子已更新: {len(merged_df)} 条")
+            factor_frames = []
+            for batch_codes in self._iter_batches(code_list, batch_size=1):
+                backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
+                reshaped = self._reshape_factor_dataframe(backward_factor, "backward_factor")
+                if not reshaped.empty:
+                    factor_frames.append(reshaped)
+                time.sleep(0.02)
+            merged_df = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
+            if not merged_df.empty:
+                self.db.incremental_update(
+                    "backward_factor",
+                    merged_df,
+                    key_columns=["code", "date"],
+                    date_column="date"
+                )
+                logger.info(f"  ✓ 后复权因子已更新: {len(merged_df)} 条")
             
-            # 前复权因子 - 返回的是 Dict[str, DataFrame]
+            # 前复权因子 - 当前 SDK 返回 index=日期、columns=代码 的 DataFrame
             logger.info("  同步前复权因子...")
-            adj_factor = self.client.get_adj_factor(code_list, is_local=True)
-            if isinstance(adj_factor, dict):
-                all_data = []
-                for code, df in adj_factor.items():
-                    if not df.empty:
-                        df['code'] = code
-                        all_data.append(df)
-                if all_data:
-                    merged_df = pd.concat(all_data, ignore_index=True)
-                    merged_df.columns = [col.lower() for col in merged_df.columns]
-                    self.db.incremental_update(
-                        "adj_factor",
-                        merged_df,
-                        key_columns=["code", "date"]
-                    )
-                    logger.info(f"  ✓ 前复权因子已更新: {len(merged_df)} 条")
+            factor_frames = []
+            for batch_codes in self._iter_batches(code_list, batch_size=1):
+                adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
+                reshaped = self._reshape_factor_dataframe(adj_factor, "adj_factor")
+                if not reshaped.empty:
+                    factor_frames.append(reshaped)
+                time.sleep(0.02)
+            merged_df = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
+            if not merged_df.empty:
+                self.db.incremental_update(
+                    "adj_factor",
+                    merged_df,
+                    key_columns=["code", "date"],
+                    date_column="date"
+                )
+                logger.info(f"  ✓ 前复权因子已更新: {len(merged_df)} 条")
                 
         except Exception as e:
             logger.error(f"✗ 同步复权因子失败: {e}")
@@ -217,7 +336,7 @@ class StarlightSyncManager:
             logger.info("⚠ 检测到首次同步，将获取全部历史数据（从2010年开始）")
         else:
             # 增量同步：查询数据库中最新的日期
-            latest_date = self.db.get_latest_date("kline_daily", "trade_time")
+            latest_date = self._get_latest_date_with_fallback("kline_daily", ["kline_time", "trade_time", "time"])
             
             if latest_date and latest_date != "None":
                 # 从最新日期开始同步（往前推1天以防遗漏）
@@ -246,6 +365,7 @@ class StarlightSyncManager:
         # 分批同步
         batch_size = 50
         total_batches = (len(codes_to_sync) + batch_size - 1) // batch_size
+        self.total_records = 0
         self.start_time = time.time()
         
         for batch_idx in range(total_batches):
@@ -258,8 +378,7 @@ class StarlightSyncManager:
                 kline_dict = self.client.query_kline(
                     code_list=batch_codes,
                     begin_date=begin_date_int,
-                    end_date=end_date_int,
-                    period=1440  # 日线
+                    end_date=end_date_int
                 )
                 
                 # 保存到统一的K线表
@@ -268,16 +387,16 @@ class StarlightSyncManager:
                     for code, df in kline_dict.items():
                         if df is not None and not df.empty:
                             # 添加 code 列
+                            df = self._lowercase_columns(df)
                             df['code'] = code
-                            # 重命名列为小写
-                            df.columns = [col.lower() for col in df.columns]
+                            time_column = self._find_existing_column(df, ["kline_time", "trade_time", "time"])
                             
                             # 增量插入到统一表
                             self.db.incremental_update(
                                 "kline_daily",
                                 df,
-                                key_columns=["code", "trade_time"],
-                                date_column="trade_time"
+                                key_columns=["code", time_column],
+                                date_column=time_column
                             )
                             batch_records += len(df)
                 
@@ -321,7 +440,7 @@ class StarlightSyncManager:
             logger.info("⚠ 检测到首次同步，将获取最近1年快照数据")
         else:
             # 增量同步：查询数据库中最新的日期
-            latest_date = self.db.get_latest_date("snapshot", "time")
+            latest_date = self._get_latest_date_with_fallback("snapshot", ["time", "snapshot_time"])
             
             if latest_date and latest_date != "None":
                 try:
@@ -348,6 +467,7 @@ class StarlightSyncManager:
         batch_size = 20  # 快照数据量大，减小批次
         codes_to_sync = all_codes
         total_batches = (len(codes_to_sync) + batch_size - 1) // batch_size
+        self.total_records = 0
         self.start_time = time.time()
         
         for batch_idx in range(total_batches):
@@ -369,16 +489,16 @@ class StarlightSyncManager:
                     for code, df in snapshot_dict.items():
                         if df is not None and not df.empty:
                             # 添加 code 列
+                            df = self._lowercase_columns(df)
                             df['code'] = code
-                            # 重命名列为小写
-                            df.columns = [col.lower() for col in df.columns]
+                            time_column = self._find_existing_column(df, ["time", "snapshot_time"])
                             
                             # 增量插入到统一表
                             self.db.incremental_update(
                                 "snapshot",
                                 df,
-                                key_columns=["code", "time"],
-                                date_column="time"
+                                key_columns=["code", time_column],
+                                date_column=time_column
                             )
                             batch_records += len(df)
                 
@@ -425,7 +545,13 @@ class StarlightSyncManager:
             try:
                 method = getattr(self.client, f"get_{data_type}")
                 # 首次同步强制从服务器获取，后续使用本地缓存
-                data = method(code_list=all_codes, is_local=(not is_first_sync))
+                data = self._fetch_by_code_batches(
+                    method,
+                    all_codes,
+                    batch_size=1,
+                    sleep_seconds=0.02,
+                    is_local=(not is_first_sync),
+                )
                 
                 if isinstance(data, dict):
                     # 按股票分组的数据，合并到统一表
@@ -491,7 +617,13 @@ class StarlightSyncManager:
             
             try:
                 method = getattr(self.client, f"get_{data_type}")
-                data = method(code_list=all_codes, is_local=(not is_first_sync))
+                data = self._fetch_by_code_batches(
+                    method,
+                    all_codes,
+                    batch_size=1,
+                    sleep_seconds=0.02,
+                    is_local=(not is_first_sync),
+                )
                 
                 if isinstance(data, pd.DataFrame) and not data.empty:
                     # 重命名列为小写
@@ -542,7 +674,13 @@ class StarlightSyncManager:
         # 5.2 融资融券明细
         logger.info("\n5.2 同步融资融券明细...")
         try:
-            margin_detail = self.client.get_margin_detail(code_list=all_codes, is_local=(not is_first_sync))
+            margin_detail = self._fetch_by_code_batches(
+                self.client.get_margin_detail,
+                all_codes,
+                batch_size=1,
+                sleep_seconds=0.02,
+                is_local=(not is_first_sync),
+            )
             if isinstance(margin_detail, dict):
                 all_data = []
                 for code, df in margin_detail.items():
@@ -565,7 +703,13 @@ class StarlightSyncManager:
         # 5.3 龙虎榜
         logger.info("\n5.3 同步龙虎榜...")
         try:
-            dragon_tiger = self.client.get_long_hu_bang(code_list=all_codes, is_local=(not is_first_sync))
+            dragon_tiger = self._fetch_by_code_batches(
+                self.client.get_long_hu_bang,
+                all_codes,
+                batch_size=1,
+                sleep_seconds=0.02,
+                is_local=(not is_first_sync),
+            )
             if not dragon_tiger.empty:
                 dragon_tiger.columns = [col.lower() for col in dragon_tiger.columns]
                 self.db.incremental_update(
@@ -581,7 +725,13 @@ class StarlightSyncManager:
         # 5.4 大宗交易
         logger.info("\n5.4 同步大宗交易...")
         try:
-            block_trade = self.client.get_block_trading(code_list=all_codes, is_local=(not is_first_sync))
+            block_trade = self._fetch_by_code_batches(
+                self.client.get_block_trading,
+                all_codes,
+                batch_size=1,
+                sleep_seconds=0.02,
+                is_local=(not is_first_sync),
+            )
             if not block_trade.empty:
                 block_trade.columns = [col.lower() for col in block_trade.columns]
                 self.db.incremental_update(
@@ -597,7 +747,13 @@ class StarlightSyncManager:
         # 5.5 股权质押冻结
         logger.info("\n5.5 同步股权质押冻结...")
         try:
-            equity_pledge = self.client.get_equity_pledge_freeze(code_list=all_codes, is_local=(not is_first_sync))
+            equity_pledge = self._fetch_by_code_batches(
+                self.client.get_equity_pledge_freeze,
+                all_codes,
+                batch_size=1,
+                sleep_seconds=0.02,
+                is_local=(not is_first_sync),
+            )
             if isinstance(equity_pledge, dict):
                 all_data = []
                 for code, df in equity_pledge.items():
@@ -619,7 +775,13 @@ class StarlightSyncManager:
         # 5.6 限售股解禁
         logger.info("\n5.6 同步限售股解禁...")
         try:
-            equity_restricted = self.client.get_equity_restricted(code_list=all_codes, is_local=(not is_first_sync))
+            equity_restricted = self._fetch_by_code_batches(
+                self.client.get_equity_restricted,
+                all_codes,
+                batch_size=1,
+                sleep_seconds=0.02,
+                is_local=(not is_first_sync),
+            )
             if isinstance(equity_restricted, dict):
                 all_data = []
                 for code, df in equity_restricted.items():
@@ -641,7 +803,13 @@ class StarlightSyncManager:
         # 5.7 分红送股
         logger.info("\n5.7 同步分红送股...")
         try:
-            dividend = self.client.get_dividend(code_list=all_codes, is_local=(not is_first_sync))
+            dividend = self._fetch_by_code_batches(
+                self.client.get_dividend,
+                all_codes,
+                batch_size=1,
+                sleep_seconds=0.02,
+                is_local=(not is_first_sync),
+            )
             if not dividend.empty:
                 dividend.columns = [col.lower() for col in dividend.columns]
                 self.db.incremental_update(
@@ -656,7 +824,13 @@ class StarlightSyncManager:
         # 5.8 配股
         logger.info("\n5.8 同步配股...")
         try:
-            right_issue = self.client.get_right_issue(code_list=all_codes, is_local=(not is_first_sync))
+            right_issue = self._fetch_by_code_batches(
+                self.client.get_right_issue,
+                all_codes,
+                batch_size=1,
+                sleep_seconds=0.02,
+                is_local=(not is_first_sync),
+            )
             if not right_issue.empty:
                 right_issue.columns = [col.lower() for col in right_issue.columns]
                 self.db.incremental_update(
@@ -690,7 +864,7 @@ class StarlightSyncManager:
         # 获取指数代码列表
         logger.info("获取指数代码列表...")
         try:
-            index_codes = self.client.get_code_list("EXTRA_INDEX")
+            index_codes = self.client.get_code_list("EXTRA_INDEX_A")
             logger.info(f"✓ 获取到 {len(index_codes)} 个指数")
         except Exception as e:
             logger.error(f"✗ 获取指数代码失败: {e}")
@@ -706,15 +880,16 @@ class StarlightSyncManager:
                 all_data = []
                 for code, df in index_constituent.items():
                     if not df.empty:
-                        df['index_code'] = code
+                        df = self._lowercase_columns(df)
+                        if "index_code" not in df.columns:
+                            df["index_code"] = code
                         all_data.append(df)
                 if all_data:
                     merged_df = pd.concat(all_data, ignore_index=True)
-                    merged_df.columns = [col.lower() for col in merged_df.columns]
                     self.db.incremental_update(
                         "index_constituent",
                         merged_df,
-                        key_columns=["index_code", "market_code"]
+                        key_columns=[col for col in ["index_code", "con_code", "indate"] if col in merged_df.columns]
                     )
                     logger.info(f"✓ 指数成分股已更新: {len(merged_df)} 条")
         except Exception as e:
@@ -723,20 +898,32 @@ class StarlightSyncManager:
         # 6.2 指数权重
         logger.info("\n6.2 同步指数权重...")
         try:
-            index_weight = self.client.get_index_weight(code_list=index_codes, is_local=(not is_first_sync))
+            supported_weight_codes = [
+                "000016.SH",
+                "000300.SH",
+                "000905.SH",
+                "000906.SH",
+                "000852.SH",
+            ]
+            weight_codes = [code for code in supported_weight_codes if code in index_codes]
+            if not weight_codes:
+                logger.warning("未获取到文档支持的指数权重代码，跳过指数权重同步")
+                return
+            index_weight = self.client.get_index_weight(code_list=weight_codes, is_local=(not is_first_sync))
             if isinstance(index_weight, dict):
                 all_data = []
                 for code, df in index_weight.items():
                     if not df.empty:
-                        df['index_code'] = code
+                        df = self._lowercase_columns(df)
+                        if "index_code" not in df.columns:
+                            df["index_code"] = code
                         all_data.append(df)
                 if all_data:
                     merged_df = pd.concat(all_data, ignore_index=True)
-                    merged_df.columns = [col.lower() for col in merged_df.columns]
                     self.db.incremental_update(
                         "index_weight",
                         merged_df,
-                        key_columns=["index_code", "market_code", "trade_date"],
+                        key_columns=[col for col in ["index_code", "con_code", "trade_date"] if col in merged_df.columns],
                         date_column="trade_date"
                     )
                     logger.info(f"✓ 指数权重已更新: {len(merged_df)} 条")
@@ -756,13 +943,13 @@ class StarlightSyncManager:
         try:
             industry_info = self.client.get_industry_base_info(is_local=(not is_first_sync))
             if not industry_info.empty:
-                industry_info.columns = [col.lower() for col in industry_info.columns]
+                industry_info = self._lowercase_columns(industry_info)
                 self.db.execute("DROP TABLE IF EXISTS industry_base_info")
                 self.db.insert_dataframe(industry_info, "industry_base_info")
                 logger.info(f"✓ 行业基本信息已更新: {len(industry_info)} 条")
                 
                 # 获取行业代码列表用于后续查询
-                industry_codes = industry_info['industry_code'].tolist() if 'industry_code' in industry_info.columns else []
+                industry_codes = industry_info['index_code'].tolist() if 'index_code' in industry_info.columns else []
             else:
                 industry_codes = []
         except Exception as e:
@@ -781,15 +968,16 @@ class StarlightSyncManager:
                 all_data = []
                 for code, df in industry_constituent.items():
                     if not df.empty:
-                        df['industry_code'] = code
+                        df = self._lowercase_columns(df)
+                        if "index_code" not in df.columns:
+                            df["index_code"] = code
                         all_data.append(df)
                 if all_data:
                     merged_df = pd.concat(all_data, ignore_index=True)
-                    merged_df.columns = [col.lower() for col in merged_df.columns]
                     self.db.incremental_update(
                         "industry_constituent",
                         merged_df,
-                        key_columns=["industry_code", "market_code"]
+                        key_columns=[col for col in ["index_code", "con_code", "indate"] if col in merged_df.columns]
                     )
                     logger.info(f"✓ 行业成分股已更新: {len(merged_df)} 条")
         except Exception as e:
@@ -798,20 +986,32 @@ class StarlightSyncManager:
         # 7.3 行业权重
         logger.info("\n7.3 同步行业权重...")
         try:
-            industry_weight = self.client.get_industry_weight(code_list=industry_codes, is_local=(not is_first_sync))
+            date_range = self._build_incremental_date_range(
+                "industry_weight",
+                ["trade_date"],
+                first_sync_days=365,
+                fallback_days=30,
+            )
+            industry_weight = self.client.get_industry_weight(
+                code_list=industry_codes,
+                is_local=(not is_first_sync),
+                begin_date=date_range["begin_date"],
+                end_date=date_range["end_date"],
+            )
             if isinstance(industry_weight, dict):
                 all_data = []
                 for code, df in industry_weight.items():
                     if not df.empty:
-                        df['industry_code'] = code
+                        df = self._lowercase_columns(df)
+                        if "index_code" not in df.columns:
+                            df["index_code"] = code
                         all_data.append(df)
                 if all_data:
                     merged_df = pd.concat(all_data, ignore_index=True)
-                    merged_df.columns = [col.lower() for col in merged_df.columns]
                     self.db.incremental_update(
                         "industry_weight",
                         merged_df,
-                        key_columns=["industry_code", "market_code", "trade_date"],
+                        key_columns=[col for col in ["index_code", "con_code", "trade_date"] if col in merged_df.columns],
                         date_column="trade_date"
                     )
                     logger.info(f"✓ 行业权重已更新: {len(merged_df)} 条")
@@ -821,20 +1021,32 @@ class StarlightSyncManager:
         # 7.4 行业日线
         logger.info("\n7.4 同步行业日线...")
         try:
-            industry_daily = self.client.get_industry_daily(code_list=industry_codes, is_local=(not is_first_sync))
+            date_range = self._build_incremental_date_range(
+                "industry_daily",
+                ["trade_date"],
+                first_sync_days=365,
+                fallback_days=30,
+            )
+            industry_daily = self.client.get_industry_daily(
+                code_list=industry_codes,
+                is_local=(not is_first_sync),
+                begin_date=date_range["begin_date"],
+                end_date=date_range["end_date"],
+            )
             if isinstance(industry_daily, dict):
                 all_data = []
                 for code, df in industry_daily.items():
                     if not df.empty:
-                        df['industry_code'] = code
+                        df = self._lowercase_columns(df)
+                        if "index_code" not in df.columns:
+                            df["index_code"] = code
                         all_data.append(df)
                 if all_data:
                     merged_df = pd.concat(all_data, ignore_index=True)
-                    merged_df.columns = [col.lower() for col in merged_df.columns]
                     self.db.incremental_update(
                         "industry_daily",
                         merged_df,
-                        key_columns=["industry_code", "trade_date"],
+                        key_columns=[col for col in ["index_code", "trade_date"] if col in merged_df.columns],
                         date_column="trade_date"
                     )
                     logger.info(f"✓ 行业日线已更新: {len(merged_df)} 条")
