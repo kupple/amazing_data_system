@@ -3,6 +3,7 @@ AmazingData SDK 客户端模块 - 按官方文档实现
 文档版本: V1.0.24
 """
 import os
+import re
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Union
 import pandas as pd
@@ -33,6 +34,7 @@ from src.common.retry import retry
 def _patch_pandas_frequency_aliases():
     """兼容旧版 SDK 仍使用大写频率别名的情况。"""
     try:
+        from pandas._libs.tslibs import offsets as tslib_offsets
         from pandas.tseries import frequencies
 
         alias_pairs = {
@@ -50,8 +52,42 @@ def _patch_pandas_frequency_aliases():
             for legacy_key, modern_key in alias_pairs.items():
                 if legacy_key not in mapping and modern_key in mapping:
                     mapping[legacy_key] = mapping[modern_key]
+
+        prefix_mapping = getattr(tslib_offsets, "prefix_mapping", None)
+        if isinstance(prefix_mapping, dict):
+            for legacy_key, modern_key in alias_pairs.items():
+                if legacy_key not in prefix_mapping and modern_key in prefix_mapping:
+                    prefix_mapping[legacy_key] = prefix_mapping[modern_key]
+
+        original_to_offset = getattr(frequencies, "to_offset", None)
+        if callable(original_to_offset) and not getattr(original_to_offset, "_amazingdata_patched", False):
+            def compat_to_offset(freq, *args, **kwargs):
+                if isinstance(freq, str):
+                    freq = _normalize_legacy_frequency(freq)
+                return original_to_offset(freq, *args, **kwargs)
+
+            compat_to_offset._amazingdata_patched = True
+            frequencies.to_offset = compat_to_offset
     except Exception:
         pass
+
+
+def _normalize_legacy_frequency(freq: str) -> str:
+    """将 pandas 新版本不兼容的旧频率写法转成新写法。"""
+    freq = freq.strip()
+    match = re.fullmatch(r"(\d*)([STLUN])", freq)
+    if not match:
+        return freq
+
+    num, unit = match.groups()
+    mapping = {
+        "S": "s",
+        "T": "min",
+        "L": "ms",
+        "U": "us",
+        "N": "ns",
+    }
+    return f"{num}{mapping[unit]}"
 
 
 _patch_pandas_frequency_aliases()
@@ -175,6 +211,7 @@ class AmazingDataClient:
         """按文档规则调用 MarketData 方法，省略未提供的可选时间参数。"""
         if not self._connected:
             self.connect()
+        _patch_pandas_frequency_aliases()
 
         call_kwargs = {
             "begin_date": begin_date,
@@ -326,14 +363,27 @@ class AmazingDataClient:
     def query_snapshot(self, code_list: List[str], begin_date: int, end_date: int,
                        begin_time: Optional[int] = None, end_time: Optional[int] = None) -> Dict:
         """3.5.4.1 历史快照"""
-        return self._call_market_method(
-            self._market.query_snapshot,
-            code_list=code_list,
-            begin_date=begin_date,
-            end_date=end_date,
-            begin_time=begin_time,
-            end_time=end_time
-        )
+        try:
+            return self._call_market_method(
+                self._market.query_snapshot,
+                code_list=code_list,
+                begin_date=begin_date,
+                end_date=end_date,
+                begin_time=begin_time,
+                end_time=end_time
+            )
+        except ValueError as e:
+            if "Invalid frequency:" in str(e):
+                _patch_pandas_frequency_aliases()
+                return self._call_market_method(
+                    self._market.query_snapshot,
+                    code_list=code_list,
+                    begin_date=begin_date,
+                    end_date=end_date,
+                    begin_time=begin_time,
+                    end_time=end_time
+                )
+            raise
 
     @retry(max_attempts=3, data_type="kline")
     def query_kline(self, code_list: List[str], begin_date: int, end_date: int,
@@ -341,15 +391,27 @@ class AmazingDataClient:
                     end_time: Optional[int] = None) -> Dict:
         """3.5.4.2 历史K线"""
         period = 1440 if period is None else period
-        return self._call_market_method(
-            self._market.query_kline,
-            code_list=code_list,
-            begin_date=begin_date,
-            end_date=end_date,
-            period=period,
-            begin_time=begin_time,
-            end_time=end_time
-        )
+        try:
+            return self._call_market_method(
+                self._market.query_kline,
+                code_list=code_list,
+                begin_date=begin_date,
+                end_date=end_date,
+                period=period,
+                begin_time=begin_time,
+                end_time=end_time
+            )
+        except TypeError as e:
+            if "NoneType" not in str(e):
+                raise
+
+            fallback_kwargs = {
+                "begin_date": begin_date,
+                "end_date": end_date,
+            }
+            if period not in (None, 1440):
+                fallback_kwargs["period"] = period
+            return self._market.query_kline(code_list, **fallback_kwargs)
 
     # ========== 3.5.5 财务数据 (InfoData) ==========
 
