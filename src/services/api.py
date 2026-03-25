@@ -2,6 +2,8 @@
 FastAPI 服务模块
 """
 import inspect
+import json
+import math
 import sys
 from pathlib import Path
 
@@ -11,9 +13,9 @@ sys.path.insert(0, str(project_root))
 
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, date
-from fastapi import FastAPI, Query, HTTPException, Depends
+from fastapi import FastAPI, Query, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 import pandas as pd
 from starlette.concurrency import run_in_threadpool
@@ -68,6 +70,36 @@ class DataResponse(BaseModel):
 def get_database() -> ClickHouseManager:
     """获取数据库实例"""
     return get_db()
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """统一 HTTP 异常响应。"""
+    detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=APIResponse(
+            code=exc.status_code,
+            message="请求失败",
+            data={"error": detail},
+            total=0
+        ).to_dict()
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """统一未处理异常响应，避免只在服务端打印栈。"""
+    logger.exception(f"未处理异常: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content=APIResponse(
+            code=500,
+            message="服务异常",
+            data={"error": str(exc)},
+            total=0
+        ).to_dict()
+    )
 
 
 # ==================== 根路径 ====================
@@ -647,7 +679,13 @@ AMAZINGDATA_METHOD_ALIASES = _build_amazingdata_method_aliases()
 def _serialize_amazingdata_result(result: Any) -> Any:
     """将 AmazingData 返回结果转换为可 JSON 序列化的数据。"""
     if isinstance(result, pd.DataFrame):
-        return result.to_dict(orient="records")
+        return [
+            {
+                key: _sanitize_amazingdata_value(value)
+                for key, value in record.items()
+            }
+            for record in result.to_dict(orient="records")
+        ]
     if isinstance(result, dict):
         return {
             key: _serialize_amazingdata_result(value)
@@ -655,7 +693,29 @@ def _serialize_amazingdata_result(result: Any) -> Any:
         }
     if isinstance(result, list):
         return [_serialize_amazingdata_result(item) for item in result]
-    return result
+    if isinstance(result, tuple):
+        return [_serialize_amazingdata_result(item) for item in result]
+    return _sanitize_amazingdata_value(result)
+
+
+def _sanitize_amazingdata_value(value: Any) -> Any:
+    """清理 JSON 不兼容的标量值，如 NaN/Inf/NaT。"""
+    if value is None:
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if pd.isna(value):
+        return None
+    if hasattr(value, "item") and callable(value.item):
+        try:
+            return _sanitize_amazingdata_value(value.item())
+        except Exception:
+            return str(value)
+    return value
 
 
 def _count_amazingdata_result(result: Any) -> int:
@@ -671,15 +731,25 @@ def _count_amazingdata_result(result: Any) -> int:
 
 def _amazingdata_error_response(status_code: int, message: str, error: str) -> JSONResponse:
     """AmazingData 接口统一错误响应。"""
-    return JSONResponse(
-        status_code=status_code,
-        content=APIResponse(
-            code=status_code,
-            message=message,
-            data={"error": error},
-            total=0
-        ).to_dict()
+    payload = APIResponse(
+        code=status_code,
+        message=message,
+        data={"error": error},
+        total=0
+    ).to_dict()
+    return _safe_json_response(payload, status_code=status_code)
+
+
+def _safe_json_response(content: Dict[str, Any], status_code: int = 200) -> Response:
+    """先执行 JSON 序列化校验，再返回响应，避免渲染阶段才抛 500。"""
+    body = json.dumps(
+        content,
+        ensure_ascii=False,
+        allow_nan=False,
+        default=str,
+        separators=(",", ":")
     )
+    return Response(content=body, status_code=status_code, media_type="application/json")
 
 
 def _normalize_amazingdata_method(method_name: str) -> Optional[str]:
@@ -754,12 +824,13 @@ async def call_amazingdata_method(request: AmazingDataRequest):
                 error=f"方法 {normalized_method} 参数错误: {e}"
             )
 
-        return APIResponse(
+        payload = APIResponse(
             code=200,
             message="调用成功",
             data=_serialize_amazingdata_result(result),
             total=_count_amazingdata_result(result)
         ).to_dict()
+        return _safe_json_response(payload, status_code=200)
 
     except Exception as e:
         logger.error(f"AmazingData 方法调用失败: {e}")
