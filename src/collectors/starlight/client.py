@@ -1,13 +1,13 @@
 """
-AmazingData SDK 客户端模块
-按文档实现的正确接口
+AmazingData SDK 客户端模块 - 按官方文档实现
+文档版本: V1.0.24
 """
-import sys
+import os
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Union
 import pandas as pd
 
-# SDK 状态
+# SDK 状态检查
 SDK_AVAILABLE = None
 
 def _check_sdk():
@@ -31,29 +31,46 @@ from src.common.retry import retry
 
 
 class AmazingDataClient:
-    """AmazingData 客户端 - 按文档实现"""
+    """AmazingData 客户端 - 严格按照官方文档实现"""
 
-    def __init__(self, account: Optional[str] = None,
+    def __init__(self, username: Optional[str] = None,
                  password: Optional[str] = None,
-                 ip: Optional[str] = None,
+                 host: Optional[str] = None,
                  port: Optional[int] = None,
                  local_path: Optional[str] = None):
-        self.account = account or config.amazing_data.account
+        """
+        初始化客户端
+        
+        Args:
+            username: 用户名（文档要求使用 username）
+            password: 密码
+            host: 服务器地址（文档要求使用 host）
+            port: 端口号
+            local_path: 本地缓存路径（Windows: 'D://cache//'）
+        """
+        self.username = username or config.amazing_data.account
         self.password = password or config.amazing_data.password
-        self.ip = ip or config.amazing_data.ip
+        self.host = host or config.amazing_data.ip
         self.port = port or config.amazing_data.port
-        # 使用临时目录作为默认缓存路径
-        import os
-        self.local_path = local_path or os.path.join(os.getcwd(), 'temp_cache')
-        os.makedirs(self.local_path, exist_ok=True)
+        
+        # Windows 路径格式: D://AmazingData_local_data//
+        if local_path is None:
+            cache_dir = os.path.join(os.getcwd(), 'amazing_data_cache')
+            os.makedirs(cache_dir, exist_ok=True)
+            # Windows 使用双斜杠
+            self.local_path = cache_dir.replace('\\', '//') + '//'
+        else:
+            self.local_path = local_path
+        
+        logger.info(f"本地缓存路径: {self.local_path}")
 
-        self._client = None
-        self._base = None
-        self._info = None
+        self._base = None  # BaseData 实例
+        self._info = None  # InfoData 实例
+        self._market = None  # MarketData 实例
         self._connected = False
 
     def connect(self) -> bool:
-        """连接服务器"""
+        """连接服务器 - 按文档实现"""
         if not _check_sdk():
             logger.error("AmazingData SDK 不可用")
             return False
@@ -61,18 +78,23 @@ class AmazingDataClient:
         try:
             import AmazingData as ad
             
-            # 登录
-            result = ad.login(self.account, self.password, self.ip, self.port)
+            # 文档要求: login(username='...', password='...', host='...', port=...)
+            result = ad.login(
+                username=self.username,
+                password=self.password,
+                host=self.host,
+                port=self.port
+            )
             
             if result:
-                # 获取 BaseData (注意: SDK 1.0.30 有 bug, calendar 可能为空)
                 self._base = ad.BaseData()
-                
-                # 获取 InfoData
                 self._info = ad.InfoData()
+                # MarketData 需要 calendar 参数
+                calendar = self._base.get_calendar()
+                self._market = ad.MarketData(calendar)
                 
                 self._connected = True
-                logger.info(f"成功连接 AmazingData ({self.ip}:{self.port})")
+                logger.info(f"成功连接 AmazingData ({self.host}:{self.port})")
             else:
                 logger.error("登录失败")
                 self._connected = False
@@ -88,7 +110,7 @@ class AmazingDataClient:
         if self._connected:
             try:
                 import AmazingData as ad
-                ad.logout()
+                ad.logout(username=self.username)
             except:
                 pass
         self._connected = False
@@ -98,367 +120,711 @@ class AmazingDataClient:
     def is_connected(self) -> bool:
         return self._connected
 
-    # ========== 基础数据接口 (BaseData) ==========
+    # ========== 3.5.1 基础接口 ==========
     
-    @retry(max_attempts=3, data_type="code_list")
-    def get_code_list(self, security_type: str = "EXTRA_STOCK_A_SH_SZ") -> List[str]:
-        """每日最新代码表（沪深北）"""
+    def update_password(self, old_password: str, new_password: str) -> bool:
+        """更新密码"""
         if not self._connected:
             self.connect()
-        return self._base.get_code_list(security_type=security_type)
+        try:
+            import AmazingData as ad
+            ad.update_password(self.username, old_password, new_password)
+            return True
+        except Exception as e:
+            logger.error(f"更新密码失败: {e}")
+            return False
 
+    # ========== 3.5.2 基础数据 (BaseData) ==========
+    
     @retry(max_attempts=3, data_type="code_info")
     def get_code_info(self, security_type: str = "EXTRA_STOCK_A") -> pd.DataFrame:
-        """每日最新证券信息"""
+        """3.5.2.1 每日最新证券信息"""
         if not self._connected:
             self.connect()
         return self._base.get_code_info(security_type=security_type)
 
-    @retry(max_attempts=3, data_type="future_code_list")
-    def get_future_code_list(self) -> List[str]:
-        """每日最新代码表（期货交易所）"""
+    @retry(max_attempts=3, data_type="code_list")
+    def get_code_list(self, security_type: str = "EXTRA_STOCK_A") -> List[str]:
+        """3.5.2.2 每日最新代码表（沪深北）"""
         if not self._connected:
             self.connect()
-        return self._base.get_future_code_list()
+        return self._base.get_code_list(security_type=security_type)
+
+    @retry(max_attempts=3, data_type="future_code_list")
+    def get_future_code_list(self, security_type: str = "EXTRA_FUTURE") -> List[str]:
+        """3.5.2.3 每日最新代码表（期货交易所）"""
+        if not self._connected:
+            self.connect()
+        return self._base.get_future_code_list(security_type=security_type)
 
     @retry(max_attempts=3, data_type="option_code_list")
-    def get_option_code_list(self, security_type: str = "EXTRA_STOCK_A") -> List[str]:
-        """每日最新代码表（期权）"""
+    def get_option_code_list(self, security_type: str = "EXTRA_ETF_OP") -> List[str]:
+        """3.5.2.4 每日最新代码表（期权）"""
         if not self._connected:
             self.connect()
         return self._base.get_option_code_list(security_type=security_type)
 
-    @retry(max_attempts=3, data_type="calendar")
-    def get_calendar(self, date: str = None, market: str = "SH", data_type: str = "str") -> List:
-        """交易日历"""
+    @retry(max_attempts=3, data_type="backward_factor")
+    def get_backward_factor(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.2.5 复权因子（后复权因子）"""
         if not self._connected:
             self.connect()
-        return self._base.get_calendar(date=date, market=market, data_type=data_type)
+        return self._base.get_backward_factor(
+            code_list, 
+            local_path=self.local_path, 
+            is_local=is_local
+        )
 
     @retry(max_attempts=3, data_type="adj_factor")
-    def get_adj_factor(self, sec_codes: List[str], start_date: str, end_date: str) -> pd.DataFrame:
-        """复权因子（后复权因子）"""
+    def get_adj_factor(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.2.6 复权因子（单次复权因子）"""
         if not self._connected:
             self.connect()
-        return self._base.get_adj_factor(sec_codes, start_date, end_date)
-
-    @retry(max_attempts=3, data_type="backward_factor")
-    def get_backward_factor(self, sec_codes: List[str], start_date: str, end_date: str) -> pd.DataFrame:
-        """复权因子（单次复权因子）"""
-        if not self._connected:
-            self.connect()
-        return self._base.get_backward_factor(sec_codes, start_date, end_date)
+        return self._base.get_adj_factor(
+            code_list, 
+            local_path=self.local_path, 
+            is_local=is_local
+        )
 
     @retry(max_attempts=3, data_type="hist_code_list")
-    def get_hist_code_list(self, date: str, exchange: str = "SH") -> List[str]:
-        """历史代码表"""
+    def get_hist_code_list(self, security_type: str, start_date: int, end_date: int) -> List[str]:
+        """3.5.2.7 历史代码表"""
         if not self._connected:
             self.connect()
-        return self._base.get_hist_code_list(date=date, exchange=exchange)
+        return self._base.get_hist_code_list(
+            security_type=security_type,
+            start_date=start_date,
+            end_date=end_date,
+            local_path=self.local_path
+        )
 
-    @retry(max_attempts=3, data_type="etf_pcf")
-    def get_etf_pcf(self, sec_codes: List[str], date: str) -> pd.DataFrame:
-        """ETF 申赎清单"""
+    @retry(max_attempts=3, data_type="calendar")
+    def get_calendar(self, data_type: str = "str", market: str = "SH") -> List:
+        """3.5.2.8 交易日历"""
         if not self._connected:
             self.connect()
-        return self._base.get_etf_pcf(sec_codes, date)
+        return self._base.get_calendar(data_type=data_type, market=market)
 
-    @retry(max_attempts=3, data_type="future_code_info")
-    def get_future_code_info(self, exchange: str = "CFFEX") -> pd.DataFrame:
-        """期货代码信息"""
+    @retry(max_attempts=3, data_type="stock_basic")
+    def get_stock_basic(self, code_list: List[str]) -> pd.DataFrame:
+        """3.5.2.9 证券基础信息"""
         if not self._connected:
             self.connect()
-        return self._base.get_future_code_info(exchange=exchange)
-
-    # ========== InfoData 财务数据接口 ==========
-
-    @retry(max_attempts=3, data_type="balance_sheet")
-    def get_balance_sheet(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
-        """资产负债表"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_balance_sheet(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="cash_flow")
-    def get_cash_flow(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
-        """现金流量表"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_cash_flow(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="income")
-    def get_income(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
-        """利润表"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_income(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="express_report")
-    def get_express_report(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
-        """业绩快报"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_profit_express(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="forecast_report")
-    def get_forecast_report(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
-        """业绩预告"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_profit_notice(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="dividend")
-    def get_dividend(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
-        """分红数据"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_dividend(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="right_issue")
-    def get_right_issue(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
-        """配股数据"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_right_issue(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    # ========== 股东股本数据 ==========
-
-    @retry(max_attempts=3, data_type="top10_holders")
-    def get_top10_holders(self, sec_codes: List[str], date: str) -> pd.DataFrame:
-        """十大股东数据"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_share_holder(sec_codes, date)
-
-    @retry(max_attempts=3, data_type="shareholder_count")
-    def get_shareholder_count(self, sec_codes: List[str], date: str) -> pd.DataFrame:
-        """股东户数"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_holder_num(sec_codes, date)
-
-    @retry(max_attempts=3, data_type="share_structure")
-    def get_share_structure(self, sec_codes: List[str], date: str) -> pd.DataFrame:
-        """股本结构"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_equity_structure(sec_codes, date)
-
-    @retry(max_attempts=3, data_type="share_pledge")
-    def get_share_pledge(self, sec_codes: List[str], date: str) -> pd.DataFrame:
-        """股权冻结/质押"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_equity_pledge_freeze(sec_codes, date)
-
-    @retry(max_attempts=3, data_type="restricted_shares")
-    def get_restricted_shares(self, sec_codes: List[str], date: str) -> pd.DataFrame:
-        """限售股解禁"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_equity_restricted(sec_codes, date)
-
-    # ========== 融资融券数据 ==========
-
-    @retry(max_attempts=3, data_type="margin_summary")
-    def get_margin_summary(self, is_local: bool = False) -> pd.DataFrame:
-        """融资融券成交汇总"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_margin_summary(local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="margin_detail")
-    def get_margin_detail(self, sec_codes: List[str], is_local: bool = False) -> pd.DataFrame:
-        """融资融券交易明细"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_margin_detail(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    # ========== 交易异动数据 ==========
-
-    @retry(max_attempts=3, data_type="dragon_tiger")
-    def get_dragon_tiger(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
-        """龙虎榜"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_long_hu_bang(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="block_trade")
-    def get_block_trade(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
-        """大宗交易"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_block_trading(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    # ========== 期权数据 ==========
-
-    @retry(max_attempts=3, data_type="option_info")
-    def get_option_info(self, sec_code: str) -> pd.DataFrame:
-        """期权基本资料"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_option_basic_info(sec_code)
-
-    @retry(max_attempts=3, data_type="option_contract")
-    def get_option_contract(self, sec_code: str, expire_date: str) -> pd.DataFrame:
-        """期权标准合约属性"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_option_std_ctr_specs(sec_code, expire_date)
-
-    @retry(max_attempts=3, data_type="option_monthly")
-    def get_option_monthly(self, sec_code: str, date: str) -> pd.DataFrame:
-        """期权月合约属性"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_option_mon_ctr_specs(sec_code, date)
-
-    # ========== ETF 数据 ==========
-
-    @retry(max_attempts=3, data_type="etf_shares")
-    def get_etf_shares(self, sec_codes: List[str], date: str) -> pd.DataFrame:
-        """ETF 基金份额"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_fund_share(sec_codes, date)
-
-    @retry(max_attempts=3, data_type="etf_iopv")
-    def get_etf_iopv(self, sec_codes: List[str], date: str) -> pd.DataFrame:
-        """ETF iopv"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_fund_iopv(sec_codes, date)
-
-    # ========== 指数数据 ==========
-
-    @retry(max_attempts=3, data_type="index_components")
-    def get_index_components(self, index_code: str) -> pd.DataFrame:
-        """指数成分股"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_index_constituent(index_code)
-
-    @retry(max_attempts=3, data_type="index_weight")
-    def get_index_weight(self, index_code: str, date: str) -> pd.DataFrame:
-        """指数成分股权重"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_index_weight(index_code, date)
-
-    # ========== 行业指数数据 ==========
-
-    @retry(max_attempts=3, data_type="industry_index_info")
-    def get_industry_index_info(self, is_local: bool = False) -> pd.DataFrame:
-        """行业指数基本信息"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_industry_base_info(local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="industry_index_components")
-    def get_industry_index_components(self, industry_code: str, is_local: bool = False) -> pd.DataFrame:
-        """行业指数成分股"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_industry_constituent(industry_code, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="industry_index_weight")
-    def get_industry_index_weight(self, industry_code: str, is_local: bool = False) -> pd.DataFrame:
-        """行业指数权重"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_industry_weight(industry_code, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="industry_index_daily")
-    def get_industry_index_daily(self, industry_code: str, is_local: bool = False) -> pd.DataFrame:
-        """行业指数日行情"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_industry_daily(industry_code, local_path=self.local_path, is_local=is_local)
-
-    # ========== 可转债数据 ==========
-
-    @retry(max_attempts=3, data_type="cb_issuance")
-    def get_cb_issuance(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
-        """可转债发行"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_issuance(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="cb_shares")
-    def get_cb_shares(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
-        """可转债份额"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_share(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="cb_conversion")
-    def get_cb_conversion(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
-        """可转债转股"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_conv(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="cb_conversion_change")
-    def get_cb_conversion_change(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
-        """可转债转股变动"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_conv_change(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="cb_modification")
-    def get_cb_modification(self, sec_codes: List[str] = None, is_local: bool = False) -> pd.DataFrame:
-        """可转债修正"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_corr(sec_codes, local_path=self.local_path, is_local=is_local)
-
-    @retry(max_attempts=3, data_type="cb_redemption")
-    def get_cb_redemption(self, date: str) -> pd.DataFrame:
-        """可转债赎回"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_call(date)
-
-    @retry(max_attempts=3, data_type="cb_put")
-    def get_cb_put(self, date: str) -> pd.DataFrame:
-        """可转债回售"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_put(date)
-
-    @retry(max_attempts=3, data_type="cb_suspension")
-    def get_cb_suspension(self, date: str) -> pd.DataFrame:
-        """可转债停复牌"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_kzz_suspend(date)
-
-    # ========== 国债收益率 ==========
-
-    @retry(max_attempts=3, data_type="treasury_yield")
-    def get_treasury_yield(self, date: str) -> pd.DataFrame:
-        """国债收益率"""
-        if not self._connected:
-            self.connect()
-        return self._info.get_treasury_yield(date)
-
-    # ========== 历史状态 ==========
+        if not hasattr(self, '_info') or self._info is None:
+            import AmazingData as ad
+            self._info = ad.InfoData()
+        return self._info.get_stock_basic(code_list)
 
     @retry(max_attempts=3, data_type="history_stock_status")
-    def get_history_stock_status(self, sec_codes: List[str], date: str) -> pd.DataFrame:
-        """历史证券状态"""
+    def get_history_stock_status(self, code_list: List[str], 
+                                  is_local: bool = True,
+                                  begin_date: Optional[int] = None,
+                                  end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.2.10 历史证券信息"""
         if not self._connected:
             self.connect()
-        return self._info.get_history_stock_status(sec_codes, date)
+        if not hasattr(self, '_info') or self._info is None:
+            import AmazingData as ad
+            self._info = ad.InfoData()
+        return self._info.get_history_stock_status(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
 
-    # ========== 北交所 ==========
-
-    @retry(max_attempts=3, data_type="bse_mapping")
-    def get_bse_code_mapping(self, is_local: bool = False) -> pd.DataFrame:
-        """北交所新旧代码对照"""
+    @retry(max_attempts=3, data_type="bj_code_mapping")
+    def get_bj_code_mapping(self, is_local: bool = True) -> pd.DataFrame:
+        """3.5.2.11 北交所新旧代码对照表"""
         if not self._connected:
             self.connect()
-        return self._info.get_bj_code_mapping(local_path=self.local_path, is_local=is_local)
+        if not hasattr(self, '_info') or self._info is None:
+            import AmazingData as ad
+            self._info = ad.InfoData()
+        return self._info.get_bj_code_mapping(
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    # ========== 3.5.3 实时行情数据 (SubscribeData) ==========
+    # 注: 实时订阅需要单独实现，这里暂不实现
+
+    # ========== 3.5.4 历史行情数据 (MarketData) ==========
+    
+    @retry(max_attempts=3, data_type="snapshot")
+    def query_snapshot(self, code_list: List[str], begin_date: int, end_date: int,
+                       begin_time: Optional[int] = None, end_time: Optional[int] = None) -> Dict:
+        """3.5.4.1 历史快照"""
+        if not self._connected:
+            self.connect()
+        return self._market.query_snapshot(
+            code_list, 
+            begin_date=begin_date, 
+            end_date=end_date,
+            begin_time=begin_time,
+            end_time=end_time
+        )
+
+    @retry(max_attempts=3, data_type="kline")
+    def query_kline(self, code_list: List[str], begin_date: int, end_date: int,
+                    period: int, begin_time: Optional[int] = None, 
+                    end_time: Optional[int] = None) -> Dict:
+        """3.5.4.2 历史K线"""
+        if not self._connected:
+            self.connect()
+        return self._market.query_kline(
+            code_list,
+            begin_date=begin_date,
+            end_date=end_date,
+            period=period,
+            begin_time=begin_time,
+            end_time=end_time
+        )
+
+    # ========== 3.5.5 财务数据 (InfoData) ==========
+
+    @retry(max_attempts=3, data_type="balance_sheet")
+    def get_balance_sheet(self, code_list: List[str], is_local: bool = True,
+                          begin_date: Optional[int] = None, 
+                          end_date: Optional[int] = None) -> Dict:
+        """3.5.5.1 资产负债表"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_balance_sheet(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="cash_flow")
+    def get_cash_flow(self, code_list: List[str], is_local: bool = True,
+                      begin_date: Optional[int] = None, 
+                      end_date: Optional[int] = None) -> Dict:
+        """3.5.5.2 现金流量表"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_cash_flow(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="income")
+    def get_income(self, code_list: List[str], is_local: bool = True,
+                   begin_date: Optional[int] = None, 
+                   end_date: Optional[int] = None) -> Dict:
+        """3.5.5.3 利润表"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_income(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="profit_express")
+    def get_profit_express(self, code_list: List[str], is_local: bool = True,
+                           begin_date: Optional[int] = None, 
+                           end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.5.4 业绩快报"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_profit_express(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="profit_notice")
+    def get_profit_notice(self, code_list: List[str], is_local: bool = True,
+                          begin_date: Optional[int] = None, 
+                          end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.5.5 业绩预告"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_profit_notice(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    # ========== 3.5.6 股东股本数据 ==========
+
+    @retry(max_attempts=3, data_type="share_holder")
+    def get_share_holder(self, code_list: List[str], is_local: bool = True,
+                         begin_date: Optional[int] = None, 
+                         end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.6.1 十大股东数据"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_share_holder(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="holder_num")
+    def get_holder_num(self, code_list: List[str], is_local: bool = True,
+                       begin_date: Optional[int] = None, 
+                       end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.6.2 股东户数"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_holder_num(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="equity_structure")
+    def get_equity_structure(self, code_list: List[str], is_local: bool = True,
+                             begin_date: Optional[int] = None, 
+                             end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.6.3 股本结构"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_equity_structure(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="equity_pledge_freeze")
+    def get_equity_pledge_freeze(self, code_list: List[str], is_local: bool = True,
+                                  begin_date: Optional[int] = None, 
+                                  end_date: Optional[int] = None) -> Dict:
+        """3.5.6.4 股权冻结/质押"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_equity_pledge_freeze(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="equity_restricted")
+    def get_equity_restricted(self, code_list: List[str], is_local: bool = True,
+                              begin_date: Optional[int] = None, 
+                              end_date: Optional[int] = None) -> Dict:
+        """3.5.6.5 限售股解禁"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_equity_restricted(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    # ========== 3.5.7 股东权益数据 ==========
+
+    @retry(max_attempts=3, data_type="dividend")
+    def get_dividend(self, code_list: List[str], is_local: bool = True,
+                     begin_date: Optional[int] = None, 
+                     end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.7.1 分红数据"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_dividend(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="right_issue")
+    def get_right_issue(self, code_list: List[str], is_local: bool = True,
+                        begin_date: Optional[int] = None, 
+                        end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.7.2 配股数据"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_right_issue(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    # ========== 3.5.8 融资融券数据 ==========
+
+    @retry(max_attempts=3, data_type="margin_summary")
+    def get_margin_summary(self, is_local: bool = True,
+                           begin_date: Optional[int] = None, 
+                           end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.8.1 融资融券成交汇总"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_margin_summary(
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="margin_detail")
+    def get_margin_detail(self, code_list: List[str], is_local: bool = True,
+                          begin_date: Optional[int] = None, 
+                          end_date: Optional[int] = None) -> Dict:
+        """3.5.8.2 融资融券交易明细"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_margin_detail(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    # ========== 3.5.9 交易异动数据 ==========
+
+    @retry(max_attempts=3, data_type="long_hu_bang")
+    def get_long_hu_bang(self, code_list: List[str], is_local: bool = True,
+                         begin_date: Optional[int] = None, 
+                         end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.9.1 龙虎榜"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_long_hu_bang(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="block_trading")
+    def get_block_trading(self, code_list: List[str], is_local: bool = True,
+                          begin_date: Optional[int] = None, 
+                          end_date: Optional[int] = None) -> pd.DataFrame:
+        """3.5.9.2 大宗交易"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_block_trading(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    # ========== 3.5.10 期权数据 ==========
+
+    @retry(max_attempts=3, data_type="option_basic_info")
+    def get_option_basic_info(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.10.1 期权基本资料"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_option_basic_info(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="option_std_ctr_specs")
+    def get_option_std_ctr_specs(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.10.2 期权标准合约属性"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_option_std_ctr_specs(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="option_mon_ctr_specs")
+    def get_option_mon_ctr_specs(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.10.3 期权月合约属性变动"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_option_mon_ctr_specs(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    # ========== 3.5.11 ETF 数据 ==========
+
+    @retry(max_attempts=3, data_type="etf_pcf")
+    def get_etf_pcf(self, code_list: List[str]) -> tuple:
+        """3.5.11.1 ETF 每日最新申赎数据"""
+        if not self._connected:
+            self.connect()
+        return self._base.get_etf_pcf(code_list)
+
+    @retry(max_attempts=3, data_type="fund_share")
+    def get_fund_share(self, code_list: List[str], is_local: bool = True,
+                       begin_date: Optional[int] = None, 
+                       end_date: Optional[int] = None) -> Dict:
+        """3.5.11.2 ETF 基金份额"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_fund_share(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="fund_iopv")
+    def get_fund_iopv(self, code_list: List[str], is_local: bool = True,
+                      begin_date: Optional[int] = None, 
+                      end_date: Optional[int] = None) -> Dict:
+        """3.5.11.3 ETF 每日收盘iopv"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_fund_iopv(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    # ========== 3.5.12 交易所指数数据 ==========
+
+    @retry(max_attempts=3, data_type="index_constituent")
+    def get_index_constituent(self, code_list: List[str], is_local: bool = True) -> Dict:
+        """3.5.12.1 交易所指数成分股"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_index_constituent(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="index_weight")
+    def get_index_weight(self, code_list: List[str], is_local: bool = True,
+                         begin_date: Optional[int] = None, 
+                         end_date: Optional[int] = None) -> Dict:
+        """3.5.12.2 交易所指数成分股日权重"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_index_weight(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    # ========== 3.5.13 行业指数数据 ==========
+
+    @retry(max_attempts=3, data_type="industry_base_info")
+    def get_industry_base_info(self, is_local: bool = True) -> pd.DataFrame:
+        """3.5.13.1 行业指数基本信息"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_industry_base_info(
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="industry_constituent")
+    def get_industry_constituent(self, code_list: List[str], is_local: bool = True) -> Dict:
+        """3.5.13.2 行业指数成分股"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_industry_constituent(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="industry_weight")
+    def get_industry_weight(self, code_list: List[str], is_local: bool = True,
+                            begin_date: Optional[int] = None, 
+                            end_date: Optional[int] = None) -> Dict:
+        """3.5.13.3 行业指数成分股日权重"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_industry_weight(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    @retry(max_attempts=3, data_type="industry_daily")
+    def get_industry_daily(self, code_list: List[str], is_local: bool = True,
+                           begin_date: Optional[int] = None, 
+                           end_date: Optional[int] = None) -> Dict:
+        """3.5.13.4 行业指数日行情"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_industry_daily(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
+
+    # ========== 3.5.14 可转债数据 ==========
+
+    @retry(max_attempts=3, data_type="kzz_issuance")
+    def get_kzz_issuance(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.1 可转债发行"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_issuance(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_share")
+    def get_kzz_share(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.2 可转债份额"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_share(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_conv")
+    def get_kzz_conv(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.3 可转债转股数据"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_conv(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_conv_change")
+    def get_kzz_conv_change(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.4 可转债转股变动数据"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_conv_change(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_corr")
+    def get_kzz_corr(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.5 可转债修正数据"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_corr(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_call")
+    def get_kzz_call(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.6 可转债赎回数据"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_call(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_put")
+    def get_kzz_put(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.7 可转债回售数据"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_put(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_put_call_item")
+    def get_kzz_put_call_item(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.8 可转债回售赎回条款"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_put_call_item(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_put_explanation")
+    def get_kzz_put_explanation(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.9 可转债回售条款执行说明"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_put_explanation(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_call_explanation")
+    def get_kzz_call_explanation(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.10 可转债赎回条款执行说明"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_call_explanation(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    @retry(max_attempts=3, data_type="kzz_suspend")
+    def get_kzz_suspend(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
+        """3.5.14.11 可转债停复牌信息"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_kzz_suspend(
+            code_list,
+            local_path=self.local_path,
+            is_local=is_local
+        )
+
+    # ========== 3.5.15 国债收益率数据 ==========
+
+    @retry(max_attempts=3, data_type="treasury_yield")
+    def get_treasury_yield(self, term_list: List[str], is_local: bool = True,
+                           begin_date: Optional[int] = None, 
+                           end_date: Optional[int] = None) -> Dict:
+        """3.5.15.1 国债收益率"""
+        if not self._connected:
+            self.connect()
+        return self._info.get_treasury_yield(
+            term_list,
+            local_path=self.local_path,
+            is_local=is_local,
+            begin_date=begin_date,
+            end_date=end_date
+        )
 
 
 # 全局客户端实例

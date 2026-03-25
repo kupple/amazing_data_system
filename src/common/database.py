@@ -21,11 +21,20 @@ class ClickHouseManager:
                  password: Optional[str] = None):
         self.host = host or config.database.host
         self.port = port or config.database.port
-        self.database = database or config.database.database
+        self.database = database  # 如果为 None，后续根据数据源选择
         self.username = username or config.database.username
         self.password = password or config.database.password
         
-        # 连接数据库
+        # 如果指定了数据库，立即连接
+        if self.database:
+            self._connect()
+        else:
+            self.client = None
+        
+        logger.info(f"ClickHouse 管理器已初始化: {self.host}:{self.port}")
+    
+    def _connect(self):
+        """连接到数据库"""
         self.client = clickhouse_connect.get_client(
             host=self.host,
             port=self.port,
@@ -33,11 +42,34 @@ class ClickHouseManager:
             password=self.password,
             database=self.database
         )
-        
         logger.info(f"已连接到 ClickHouse: {self.host}:{self.port}/{self.database}")
         
         # 初始化表结构
         self._init_tables()
+    
+    def use_database(self, database: str):
+        """切换数据库"""
+        if self.database != database:
+            self.database = database
+            if self.client:
+                self.client.close()
+            self._connect()
+    
+    def ensure_database(self, database: str):
+        """确保数据库存在"""
+        # 使用 system 数据库连接
+        temp_client = clickhouse_connect.get_client(
+            host=self.host,
+            port=self.port,
+            username=self.username,
+            password=self.password
+        )
+        
+        try:
+            temp_client.command(f"CREATE DATABASE IF NOT EXISTS {database}")
+            logger.info(f"数据库 {database} 已就绪")
+        finally:
+            temp_client.close()
     
     def _init_tables(self):
         """初始化表结构"""
@@ -362,21 +394,56 @@ class ClickHouseManager:
         self.close()
 
 
-# 全局数据库实例
-_db_instance: Optional[ClickHouseManager] = None
+# 全局数据库实例（按数据源分类）
+_db_instances: Dict[str, ClickHouseManager] = {}
 
 
-def get_db() -> ClickHouseManager:
-    """获取数据库实例（单例）"""
-    global _db_instance
-    if _db_instance is None:
-        _db_instance = ClickHouseManager()
-    return _db_instance
+def get_db(source: str = "starlight") -> ClickHouseManager:
+    """
+    获取数据库实例（单例，按数据源）
+    
+    Args:
+        source: 数据源名称 ('baostock', 'starlight', 'miniqmt', 'akshare')
+    """
+    global _db_instances
+    
+    if source not in _db_instances:
+        # 根据数据源选择数据库
+        db_mapping = {
+            "baostock": config.database.db_baostock,
+            "starlight": config.database.db_starlight,
+            "miniqmt": config.database.db_miniqmt,
+            "akshare": config.database.db_akshare,
+        }
+        
+        database = db_mapping.get(source)
+        if not database:
+            raise ValueError(f"未知的数据源: {source}")
+        
+        # 创建数据库管理器
+        db = ClickHouseManager(database=None)
+        db.ensure_database(database)
+        db.use_database(database)
+        
+        _db_instances[source] = db
+    
+    return _db_instances[source]
 
 
-def close_db():
-    """关闭数据库"""
-    global _db_instance
-    if _db_instance:
-        _db_instance.close()
-        _db_instance = None
+def close_db(source: Optional[str] = None):
+    """
+    关闭数据库
+    
+    Args:
+        source: 数据源名称，如果为 None 则关闭所有
+    """
+    global _db_instances
+    
+    if source:
+        if source in _db_instances:
+            _db_instances[source].close()
+            del _db_instances[source]
+    else:
+        for db in _db_instances.values():
+            db.close()
+        _db_instances.clear()

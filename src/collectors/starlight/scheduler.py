@@ -1,157 +1,57 @@
 """
-定时任务模块
+Starlight (AmazingData) 定时任务调度器
+实现增量同步到 starlight 数据库
 """
 import time
-import threading
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
+import pandas as pd
 
 from src.common.config import config
 from src.common.logger import logger
 from src.collectors.starlight.client import get_client, AmazingDataClient
 from src.common.database import get_db, ClickHouseManager
-from src.common.retry import retry_manager
-from src.common.models import DataSource
 
 
-class DataFetcher:
-    """数据获取器"""
-    
-    def __init__(self, client: Optional[AmazingDataClient] = None,
-                 db: Optional[ClickHouseManager] = None):
-        self.client = client or get_client()
-        self.db = db or get_db()
-    
-    def fetch_and_save(self, data_type: DataSource, 
-                       table_name: Optional[str] = None,
-                       unique_keys: Optional[List[str]] = None,
-                       **kwargs) -> Dict[str, Any]:
-        """
-        获取并保存数据
-        
-        Args:
-            data_type: 数据类型
-            table_name: 表名（默认使用 data_type）
-            unique_keys: 唯一键，用于去重
-            **kwargs: 其他参数
-            
-        Returns:
-            结果字典
-        """
-        if table_name is None:
-            table_name = data_type.value
-        
-        try:
-            if not self.client.is_connected:
-                self.client.login()
-            
-            logger.info(f"开始获取数据: {data_type}")
-            df = self.client.fetch_data(data_type, **kwargs)
-            
-            if df.empty:
-                logger.warning(f"数据为空: {data_type}")
-                self.db.save_fetch_record(data_type.value, success=True, record_count=0)
-                logger.log_fetch(data_type.value, True, 0)
-                return {"success": True, "record_count": 0}
-            
-            # 保存到数据库（增量去重）
-            self.db.insert_dataframe(df, table_name, unique_keys=unique_keys)
-            
-            self.db.save_fetch_record(
-                data_type.value, success=True, record_count=len(df),
-                start_date=kwargs.get("start_date"), end_date=kwargs.get("end_date")
-            )
-            logger.log_fetch(data_type.value, True, len(df))
-            
-            return {"success": True, "record_count": len(df)}
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"获取数据失败 {data_type}: {error_msg}")
-            self.db.save_fetch_record(data_type.value, success=False, error_message=error_msg)
-            logger.log_fetch(data_type.value, False, 0, error_msg)
-            
-            retry_manager.add_failed_task(
-                f"{data_type.value}_{datetime.now().timestamp()}",
-                {
-                    "data_type": data_type.value,
-                    "func": "fetch_and_save",
-                    "args": (data_type, table_name),
-                    "kwargs": kwargs,
-                    "error": error_msg,
-                    "max_attempts": config.scheduler.retry_times
-                }
-            )
-            
-            return {"success": False, "error": error_msg}
-    
-    def incremental_fetch(self, data_type: DataSource,
-                          table_name: Optional[str] = None,
-                          date_column: str = "trade_date",
-                          **kwargs) -> Dict[str, Any]:
-        """
-        增量获取数据
-        
-        Args:
-            data_type: 数据类型
-            table_name: 表名
-            date_column: 日期列名
-            **kwargs: 其他参数
-            
-        Returns:
-            结果字典
-        """
-        if table_name is None:
-            table_name = data_type.value
-        
-        try:
-            # 获取最新日期
-            latest_date = self.db.get_latest_date(table_name, date_column)
-            
-            # 设置日期范围
-            if latest_date:
-                kwargs["start_date"] = latest_date
-                logger.info(f"增量更新 {table_name}, 从 {latest_date} 开始")
-            else:
-                # 首次获取，获取过去30天数据
-                start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
-                kwargs["start_date"] = start_date
-                logger.info(f"首次获取 {table_name}, 从 {start_date} 开始")
-            
-            # 获取数据
-            return self.fetch_and_save(data_type, table_name, **kwargs)
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-
-class Scheduler:
-    """定时任务调度器"""
+class StarlightScheduler:
+    """Starlight 数据同步调度器"""
     
     def __init__(self):
         self.scheduler = BackgroundScheduler()
-        self.fetcher = DataFetcher()
+        self.client: Optional[AmazingDataClient] = None
+        self.db: Optional[ClickHouseManager] = None
         self._running = False
+    
+    def _ensure_connections(self):
+        """确保连接"""
+        if self.client is None:
+            self.client = get_client()
+            if not self.client.is_connected:
+                self.client.connect()
+        
+        if self.db is None:
+            # 使用 starlight 数据源的数据库
+            self.db = get_db("starlight")
     
     def start(self):
         """启动调度器"""
         if self._running:
-            logger.warning("调度器已在运行")
+            logger.warning("Starlight 调度器已在运行")
             return
         
         if not config.scheduler.enabled:
             logger.info("调度器未启用")
             return
         
-        # 添加定时任务
+        self._ensure_connections()
         self._add_jobs()
         
         self.scheduler.start()
         self._running = True
-        logger.info("调度器已启动")
+        logger.info("Starlight 调度器已启动")
     
     def stop(self):
         """停止调度器"""
@@ -160,234 +60,488 @@ class Scheduler:
         
         self.scheduler.shutdown()
         self._running = False
-        logger.info("调度器已停止")
+        logger.info("Starlight 调度器已停止")
     
     def _add_jobs(self):
         """添加定时任务"""
         
-        # 每小时增量更新实时行情
+        # 每日早上 6:00 更新基础数据
         self.scheduler.add_job(
-            self.sync_realtime_data,
-            trigger=IntervalTrigger(hours=config.scheduler.interval_hours),
-            id="sync_realtime",
-            name="同步实时行情数据",
+            self.sync_basic_data,
+            trigger=CronTrigger(hour=6, minute=0),
+            id="starlight_sync_basic",
+            name="同步基础数据（代码表、日历等）",
             replace_existing=True
         )
         
-        # 每日收盘后更新历史行情
+        # 每日收盘后 16:30 更新行情数据
         self.scheduler.add_job(
-            self.sync_historical_data,
-            trigger=CronTrigger(hour=16, minute=0),
-            id="sync_historical",
+            self.sync_market_data,
+            trigger=CronTrigger(hour=16, minute=30),
+            id="starlight_sync_market",
             name="同步历史行情数据",
             replace_existing=True
         )
         
-        # 每日收盘后更新财务数据
+        # 每日晚上 18:00 更新财务数据
         self.scheduler.add_job(
             self.sync_financial_data,
-            trigger=CronTrigger(hour=17, minute=0),
-            id="sync_financial",
+            trigger=CronTrigger(hour=18, minute=0),
+            id="starlight_sync_financial",
             name="同步财务数据",
             replace_existing=True
         )
         
-        # 每日更新基础数据
-        self.scheduler.add_job(
-            self.sync_basic_data,
-            trigger=CronTrigger(hour=6, minute=0),
-            id="sync_basic",
-            name="同步基础数据",
-            replace_existing=True
-        )
-        
-        # 每日更新股东数据
+        # 每日晚上 19:00 更新股东数据
         self.scheduler.add_job(
             self.sync_holder_data,
-            trigger=CronTrigger(hour=18, minute=0),
-            id="sync_holder",
+            trigger=CronTrigger(hour=19, minute=0),
+            id="starlight_sync_holder",
             name="同步股东数据",
             replace_existing=True
         )
         
-        logger.info("定时任务已添加")
+        # 每日晚上 20:00 更新其他数据
+        self.scheduler.add_job(
+            self.sync_other_data,
+            trigger=CronTrigger(hour=20, minute=0),
+            id="starlight_sync_other",
+            name="同步其他数据（融资融券、龙虎榜等）",
+            replace_existing=True
+        )
+        
+        logger.info("Starlight 定时任务已添加")
     
-    def sync_realtime_data(self):
-        """同步实时行情数据（先删后存）"""
-        logger.info("开始同步实时行情数据")
-        
-        data_types = [
-            (DataSource.INDEX_SNAPSHOT, "index_snapshot"),
-            (DataSource.STOCK_SNAPSHOT, "stock_snapshot"),
-            (DataSource.ETF_SNAPSHOT, "etf_snapshot"),
-            (DataSource.CB_SNAPSHOT, "cb_snapshot"),
-        ]
-        
-        results = []
-        for data_type, table_name in data_types:
-            try:
-                if not self.client.is_connected:
-                    self.client.login()
-                
-                df = self.client.fetch_data(data_type)
-                if not df.empty:
-                    # 快照数据：先删后存
-                    self.fetcher.db.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-                    self.fetcher.db.insert_dataframe(df, table_name)
-                    logger.info(f"{table_name} 已更新，共 {len(df)} 条")
-                    results.append({"data_type": data_type.value, "success": True, "record_count": len(df)})
-            except Exception as e:
-                logger.error(f"同步 {table_name} 失败: {e}")
-                results.append({"data_type": data_type.value, "success": False, "error": str(e)})
-        
-        return results
+    # ========== 基础数据同步 ==========
     
-    def sync_historical_data(self):
-        """同步历史行情数据（增量）"""
-        logger.info("开始同步历史行情数据")
-        
-        # 获取所有股票代码
-        sec_codes = self.fetcher.db.query("SELECT DISTINCT sec_code FROM stock_snapshot")
-        
-        results = []
-        for _, row in sec_codes.iterrows():
-            sec_code = row["sec_code"]
-            try:
-                # 使用增量获取
-                result = self.fetcher.incremental_fetch(
-                    DataSource.HISTORICAL_KLINE,
-                    table_name=f"kline_{sec_code}",
-                    date_column="trade_date",
-                    sec_code=sec_code,
-                    kline_type="1D"
-                )
-                results.append({"sec_code": sec_code, **result})
-            except Exception as e:
-                logger.error(f"获取 {sec_code} K线失败: {e}")
-        
-        return results
-    
-    def sync_financial_data(self):
-        """同步财务数据（日期增量）"""
-        logger.info("开始同步财务数据")
-        
-        data_types = [
-            DataSource.BALANCE_SHEET,
-            DataSource.CASH_FLOW,
-            DataSource.INCOME,
-            DataSource.EXPRESS_REPORT,
-            DataSource.FORECAST_REPORT,
-        ]
-        
-        results = []
-        # 获取所有股票代码
-        sec_codes = self.fetcher.db.query("SELECT DISTINCT sec_code FROM stock_snapshot")
-        
-        for data_type in data_types:
-            for _, row in sec_codes.iterrows():
-                sec_code = row["sec_code"]
-                table_name = f"{data_type.value}_{sec_code}"
-                try:
-                    # 使用日期增量
-                    result = self.fetcher.incremental_fetch(
-                        data_type,
-                        table_name=table_name,
-                        date_column="report_date",
-                        sec_code=sec_code
-                    )
-                    results.append({"data_type": data_type.value, "sec_code": sec_code, **result})
-                except Exception as e:
-                    logger.error(f"获取 {sec_code} {data_type} 失败: {e}")
-        
-        return results
-    
-    def sync_basic_data(self):
-        """同步基础数据（先删后存）"""
+    def sync_basic_data(self) -> Dict[str, Any]:
+        """同步基础数据（每日更新）"""
         logger.info("开始同步基础数据")
-        
-        # 列表类数据：先删后存
-        list_data = [
-            (DataSource.SECURITY_CODE, "security_code"),
-            (DataSource.FUTURES_CODE, "futures_code"),
-            (DataSource.SECURITY_BASIC, "security_basic"),
-        ]
+        self._ensure_connections()
         
         results = []
-        for data_type, table_name in list_data:
-            try:
-                if not self.client.is_connected:
-                    self.client.login()
+        
+        # 1. 股票代码表（全量替换）
+        try:
+            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+            df = pd.DataFrame({"code": code_list})
+            df["update_time"] = datetime.now()
+            
+            # 全量替换
+            self.db.execute(f"DROP TABLE IF EXISTS stock_codes")
+            self.db.insert_dataframe(df, "stock_codes")
+            
+            logger.info(f"股票代码表已更新，共 {len(df)} 条")
+            results.append({"type": "stock_codes", "success": True, "count": len(df)})
+        except Exception as e:
+            logger.error(f"同步股票代码表失败: {e}")
+            results.append({"type": "stock_codes", "success": False, "error": str(e)})
+        
+        # 2. 交易日历（增量）
+        try:
+            calendar = self.client.get_calendar()
+            df = pd.DataFrame({"trade_date": calendar})
+            df["trade_date"] = pd.to_datetime(df["trade_date"])
+            
+            # 增量插入
+            self.db.incremental_update(
+                "trading_calendar",
+                df,
+                key_columns=["trade_date"],
+                date_column="trade_date"
+            )
+            
+            logger.info(f"交易日历已更新")
+            results.append({"type": "trading_calendar", "success": True})
+        except Exception as e:
+            logger.error(f"同步交易日历失败: {e}")
+            results.append({"type": "trading_calendar", "success": False, "error": str(e)})
+        
+        # 3. 证券基础信息（全量替换）
+        try:
+            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+            stock_basic = self.client.get_stock_basic(code_list)
+            
+            if not stock_basic.empty:
+                self.db.execute(f"DROP TABLE IF EXISTS stock_basic")
+                self.db.insert_dataframe(stock_basic, "stock_basic")
                 
-                df = self.client.fetch_data(data_type)
-                if not df.empty:
-                    # 先删除旧数据
-                    self.fetcher.db.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-                    # 插入新数据
-                    self.fetcher.db.insert_dataframe(df, table_name)
-                    logger.info(f"{table_name} 已更新，共 {len(df)} 条")
-                    results.append({"data_type": data_type.value, "success": True, "record_count": len(df)})
-            except Exception as e:
-                logger.error(f"同步 {table_name} 失败: {e}")
-                results.append({"data_type": data_type.value, "success": False, "error": str(e)})
+                logger.info(f"证券基础信息已更新，共 {len(stock_basic)} 条")
+                results.append({"type": "stock_basic", "success": True, "count": len(stock_basic)})
+        except Exception as e:
+            logger.error(f"同步证券基础信息失败: {e}")
+            results.append({"type": "stock_basic", "success": False, "error": str(e)})
         
-        # 有日期的数据：增量更新
-        date_data = [
-            (DataSource.SECURITY_INFO, "security_info", "trade_date"),
-            (DataSource.TRADING_CALENDAR, "trading_calendar", "trade_date"),
-        ]
+        # 4. 复权因子（增量）
+        try:
+            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+            
+            # 后复权因子
+            backward_factor = self.client.get_backward_factor(code_list, is_local=True)
+            if not backward_factor.empty:
+                self.db.incremental_update(
+                    "backward_factor",
+                    backward_factor,
+                    key_columns=["code", "date"]
+                )
+                logger.info(f"后复权因子已更新，共 {len(backward_factor)} 条")
+                results.append({"type": "backward_factor", "success": True, "count": len(backward_factor)})
+            
+            # 前复权因子
+            adj_factor = self.client.get_adj_factor(code_list, is_local=True)
+            if not adj_factor.empty:
+                self.db.incremental_update(
+                    "adj_factor",
+                    adj_factor,
+                    key_columns=["code", "date"]
+                )
+                logger.info(f"前复权因子已更新，共 {len(adj_factor)} 条")
+                results.append({"type": "adj_factor", "success": True, "count": len(adj_factor)})
+                
+        except Exception as e:
+            logger.error(f"同步复权因子失败: {e}")
+            results.append({"type": "adj_factor", "success": False, "error": str(e)})
         
-        for data_type, table_name, date_col in date_data:
-            result = self.fetcher.incremental_fetch(data_type, table_name, date_column=date_col)
-            results.append({"data_type": data_type.value, **result})
-        
-        return results
+        return {"task": "sync_basic_data", "results": results}
     
-    def sync_holder_data(self):
-        """同步股东数据（日期增量）"""
-        logger.info("开始同步股东数据")
-        
-        data_types = [
-            DataSource.TOP10_HOLDERS,
-            DataSource.SHAREHOLDER_COUNT,
-            DataSource.SHARE_STRUCTURE,
-        ]
+    # ========== 行情数据同步 ==========
+    
+    def sync_market_data(self) -> Dict[str, Any]:
+        """同步历史行情数据（智能增量）"""
+        logger.info("开始同步历史行情数据")
+        self._ensure_connections()
         
         results = []
-        # 获取所有股票代码
-        sec_codes = self.fetcher.db.query("SELECT DISTINCT sec_code FROM stock_snapshot")
         
-        for data_type in data_types:
-            for _, row in sec_codes.iterrows():
-                sec_code = row["sec_code"]
-                table_name = f"{data_type.value}_{sec_code}"
-                try:
-                    # 使用日期增量
-                    result = self.fetcher.incremental_fetch(
+        # 获取股票列表
+        try:
+            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+            logger.info(f"获取到 {len(code_list)} 只股票")
+        except Exception as e:
+            logger.error(f"获取股票列表失败: {e}")
+            return {"task": "sync_market_data", "error": str(e)}
+        
+        # 智能判断时间范围
+        # 检查K线表是否存在
+        is_first_sync = not self.db.table_exists("kline_daily")
+        
+        end_date = datetime.now()
+        if is_first_sync:
+            # 首次同步：获取全部历史（从2010年开始）
+            start_date = datetime(2010, 1, 1)
+            logger.info("⚠ 检测到首次同步，将获取全部历史数据（从2010年开始）")
+        else:
+            # 增量同步：查询数据库中最新的日期
+            latest_date = self.db.get_latest_date("kline_daily", "trade_time")
+            
+            if latest_date:
+                # 从最新日期开始同步（往前推1天以防遗漏）
+                start_date = datetime.strptime(latest_date[:10], "%Y-%m-%d") - timedelta(days=1)
+                logger.info(f"✓ 增量同步模式，从最新日期 {latest_date[:10]} 开始")
+            else:
+                # 如果查不到最新日期，默认获取最近30天
+                start_date = end_date - timedelta(days=30)
+                logger.info("⚠ 未找到最新日期，默认获取最近30天数据")
+        
+        begin_date_int = int(start_date.strftime("%Y%m%d"))
+        end_date_int = int(end_date.strftime("%Y%m%d"))
+        
+        logger.info(f"时间范围: {begin_date_int} - {end_date_int}")
+        
+        # 分批处理，每次50只股票（同步所有股票）
+        batch_size = 50
+        for i in range(0, len(code_list), batch_size):
+            batch_codes = code_list[i:i+batch_size]
+            
+            try:
+                # 获取日K线
+                kline_dict = self.client.query_kline(
+                    code_list=batch_codes,
+                    begin_date=begin_date_int,
+                    end_date=end_date_int,
+                    period=1440  # 日线
+                )
+                
+                # 保存到统一的K线表
+                for code, df in kline_dict.items():
+                    if not df.empty:
+                        # 添加 code 列
+                        df['code'] = code
+                        # 重命名列为小写
+                        df.columns = [col.lower() for col in df.columns]
+                        
+                        # 增量插入到统一表
+                        self.db.incremental_update(
+                            "kline_daily",
+                            df,
+                            key_columns=["code", "trade_time"],
+                            date_column="trade_time"
+                        )
+                
+                logger.info(f"已同步 {i+len(batch_codes)}/{len(code_list)} 只股票的K线数据")
+                results.append({"batch": i//batch_size, "success": True, "count": len(batch_codes)})
+                
+            except Exception as e:
+                logger.error(f"同步第 {i//batch_size} 批K线数据失败: {e}")
+                results.append({"batch": i//batch_size, "success": False, "error": str(e)})
+            
+            # 避免请求过快
+            time.sleep(1)
+        
+        return {"task": "sync_market_data", "results": results}
+    
+    # ========== 财务数据同步 ==========
+    
+    def sync_financial_data(self) -> Dict[str, Any]:
+        """同步财务数据（智能增量）"""
+        logger.info("开始同步财务数据")
+        self._ensure_connections()
+        
+        results = []
+        
+        # 获取股票列表
+        try:
+            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+        except Exception as e:
+            logger.error(f"获取股票列表失败: {e}")
+            return {"task": "sync_financial_data", "error": str(e)}
+        
+        # 检查是否首次同步
+        is_first_sync = not self.db.table_exists("balance_sheet")
+        
+        if is_first_sync:
+            logger.info("⚠ 检测到首次同步，将获取全部历史财务数据")
+        else:
+            logger.info("✓ 增量同步模式，使用本地缓存加速")
+        
+        # 财务数据类型
+        financial_types = [
+            ("balance_sheet", "资产负债表"),
+            ("cash_flow", "现金流量表"),
+            ("income", "利润表"),
+            ("profit_express", "业绩快报"),
+            ("profit_notice", "业绩预告"),
+        ]
+        
+        for data_type, name in financial_types:
+            try:
+                # 获取方法
+                method = getattr(self.client, f"get_{data_type}")
+                
+                # 首次同步强制从服务器获取，后续使用本地缓存
+                data = method(code_list=code_list, is_local=(not is_first_sync))
+                
+                if isinstance(data, dict):
+                    # 字典格式：按股票分组，合并到统一表
+                    all_data = []
+                    for code, df in data.items():
+                        if not df.empty:
+                            df['market_code'] = code
+                            all_data.append(df)
+                    
+                    if all_data:
+                        merged_df = pd.concat(all_data, ignore_index=True)
+                        # 重命名列为小写
+                        merged_df.columns = [col.lower() for col in merged_df.columns]
+                        
+                        self.db.incremental_update(
+                            data_type,
+                            merged_df,
+                            key_columns=["market_code", "reporting_period"],
+                            date_column="reporting_period"
+                        )
+                        
+                        logger.info(f"{name}已更新，共 {len(merged_df)} 条")
+                        results.append({"type": data_type, "success": True, "count": len(merged_df)})
+                    
+                elif isinstance(data, pd.DataFrame) and not data.empty:
+                    # DataFrame 格式：统一表
+                    # 重命名列为小写
+                    data.columns = [col.lower() for col in data.columns]
+                    
+                    self.db.incremental_update(
                         data_type,
-                        table_name=table_name,
-                        date_column="end_date",
-                        sec_code=sec_code
+                        data,
+                        key_columns=["market_code", "reporting_period"],
+                        date_column="reporting_period"
                     )
-                    results.append({"data_type": data_type.value, "sec_code": sec_code, **result})
-                except Exception as e:
-                    logger.error(f"获取 {sec_code} {data_type} 失败: {e}")
+                    
+                    logger.info(f"{name}已更新，共 {len(data)} 条")
+                    results.append({"type": data_type, "success": True, "count": len(data)})
+                
+            except Exception as e:
+                logger.error(f"同步{name}失败: {e}")
+                results.append({"type": data_type, "success": False, "error": str(e)})
         
-        return results
+        return {"task": "sync_financial_data", "results": results}
+    
+    # ========== 股东数据同步 ==========
+    
+    def sync_holder_data(self) -> Dict[str, Any]:
+        """同步股东数据（智能增量）"""
+        logger.info("开始同步股东数据")
+        self._ensure_connections()
+        
+        results = []
+        
+        # 获取股票列表
+        try:
+            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+        except Exception as e:
+            logger.error(f"获取股票列表失败: {e}")
+            return {"task": "sync_holder_data", "error": str(e)}
+        
+        # 检查是否首次同步
+        is_first_sync = not self.db.table_exists("share_holder")
+        
+        if is_first_sync:
+            logger.info("⚠ 检测到首次同步，将获取全部历史股东数据")
+        else:
+            logger.info("✓ 增量同步模式，使用本地缓存加速")
+        
+        # 股东数据类型
+        holder_types = [
+            ("share_holder", "十大股东", ["market_code", "holder_enddate", "qty_num"]),
+            ("holder_num", "股东户数", ["market_code", "holder_enddate"]),
+            ("equity_structure", "股本结构", ["market_code", "change_date"]),
+        ]
+        
+        for data_type, name, key_columns in holder_types:
+            try:
+                method = getattr(self.client, f"get_{data_type}")
+                data = method(code_list=code_list, is_local=(not is_first_sync))
+                
+                if isinstance(data, pd.DataFrame) and not data.empty:
+                    # 重命名列为小写
+                    data.columns = [col.lower() for col in data.columns]
+                    
+                    self.db.incremental_update(
+                        data_type,
+                        data,
+                        key_columns=key_columns
+                    )
+                    
+                    logger.info(f"{name}已更新，共 {len(data)} 条")
+                    results.append({"type": data_type, "success": True, "count": len(data)})
+                
+            except Exception as e:
+                logger.error(f"同步{name}失败: {e}")
+                results.append({"type": data_type, "success": False, "error": str(e)})
+        
+        return {"task": "sync_holder_data", "results": results}
+    
+    # ========== 其他数据同步 ==========
+    
+    def sync_other_data(self) -> Dict[str, Any]:
+        """同步其他数据（融资融券、龙虎榜等）"""
+        logger.info("开始同步其他数据")
+        self._ensure_connections()
+        
+        results = []
+        
+        # 获取股票列表
+        try:
+            code_list = self.client.get_code_list("EXTRA_STOCK_A")
+        except Exception as e:
+            logger.error(f"获取股票列表失败: {e}")
+            return {"task": "sync_other_data", "error": str(e)}
+        
+        # 检查是否首次同步
+        is_first_sync = not self.db.table_exists("margin_summary")
+        
+        if is_first_sync:
+            logger.info("⚠ 检测到首次同步，将获取全部历史数据")
+        else:
+            logger.info("✓ 增量同步模式，使用本地缓存加速")
+        
+        # 1. 融资融券汇总
+        try:
+            margin_summary = self.client.get_margin_summary(is_local=(not is_first_sync))
+            if not margin_summary.empty:
+                # 重命名列为小写
+                margin_summary.columns = [col.lower() for col in margin_summary.columns]
+                
+                self.db.incremental_update(
+                    "margin_summary",
+                    margin_summary,
+                    key_columns=["trade_date"],
+                    date_column="trade_date"
+                )
+                logger.info(f"融资融券汇总已更新，共 {len(margin_summary)} 条")
+                results.append({"type": "margin_summary", "success": True, "count": len(margin_summary)})
+        except Exception as e:
+            logger.error(f"同步融资融券汇总失败: {e}")
+            results.append({"type": "margin_summary", "success": False, "error": str(e)})
+        
+        # 2. 龙虎榜
+        try:
+            dragon_tiger = self.client.get_long_hu_bang(code_list=code_list, is_local=(not is_first_sync))
+            if not dragon_tiger.empty:
+                # 重命名列为小写
+                dragon_tiger.columns = [col.lower() for col in dragon_tiger.columns]
+                
+                self.db.incremental_update(
+                    "dragon_tiger",
+                    dragon_tiger,
+                    key_columns=["market_code", "trade_date", "trader_name"],
+                    date_column="trade_date"
+                )
+                logger.info(f"龙虎榜已更新，共 {len(dragon_tiger)} 条")
+                results.append({"type": "dragon_tiger", "success": True, "count": len(dragon_tiger)})
+        except Exception as e:
+            logger.error(f"同步龙虎榜失败: {e}")
+            results.append({"type": "dragon_tiger", "success": False, "error": str(e)})
+        
+        # 3. 大宗交易
+        try:
+            block_trade = self.client.get_block_trading(code_list=code_list, is_local=(not is_first_sync))
+            if not block_trade.empty:
+                # 重命名列为小写
+                block_trade.columns = [col.lower() for col in block_trade.columns]
+                
+                self.db.incremental_update(
+                    "block_trade",
+                    block_trade,
+                    key_columns=["market_code", "trade_date"],
+                    date_column="trade_date"
+                )
+                logger.info(f"大宗交易已更新，共 {len(block_trade)} 条")
+                results.append({"type": "block_trade", "success": True, "count": len(block_trade)})
+        except Exception as e:
+            logger.error(f"同步大宗交易失败: {e}")
+            results.append({"type": "block_trade", "success": False, "error": str(e)})
+        
+        return {"task": "sync_other_data", "results": results}
+    
+    # ========== 手动触发 ==========
     
     def trigger_sync(self, sync_type: str) -> Dict[str, Any]:
         """
         手动触发同步
         
         Args:
-            sync_type: 同步类型 (realtime, historical, financial, basic, holder)
+            sync_type: 同步类型 ('basic', 'market', 'financial', 'holder', 'other', 'all')
         """
+        self._ensure_connections()
+        
         sync_methods = {
-            "realtime": self.sync_realtime_data,
-            "historical": self.sync_historical_data,
-            "financial": self.sync_financial_data,
             "basic": self.sync_basic_data,
+            "market": self.sync_market_data,
+            "financial": self.sync_financial_data,
             "holder": self.sync_holder_data,
+            "other": self.sync_other_data,
         }
+        
+        if sync_type == "all":
+            results = []
+            for name, method in sync_methods.items():
+                try:
+                    result = method()
+                    results.append(result)
+                except Exception as e:
+                    logger.error(f"同步 {name} 失败: {e}")
+                    results.append({"task": name, "success": False, "error": str(e)})
+            return {"sync_type": "all", "results": results}
         
         method = sync_methods.get(sync_type)
         if method is None:
@@ -402,14 +556,14 @@ class Scheduler:
 
 
 # 全局调度器实例
-_scheduler: Optional[Scheduler] = None
+_scheduler: Optional[StarlightScheduler] = None
 
 
-def get_scheduler() -> Scheduler:
+def get_scheduler() -> StarlightScheduler:
     """获取调度器实例"""
     global _scheduler
     if _scheduler is None:
-        _scheduler = Scheduler()
+        _scheduler = StarlightScheduler()
     return _scheduler
 
 

@@ -28,10 +28,14 @@ class DatabaseConfig:
     """数据库配置"""
     host: str
     port: int
-    database: str
     username: str
     password: str
     backup_path: str
+    # 不同数据源使用不同的数据库
+    db_baostock: str
+    db_starlight: str
+    db_miniqmt: str
+    db_akshare: str
 
 
 @dataclass
@@ -102,10 +106,13 @@ class AppConfig:
             database=DatabaseConfig(
                 host=os.getenv("DB_HOST", "localhost"),
                 port=int(os.getenv("DB_PORT", "8123")),
-                database=os.getenv("DB_NAME", "amazing_data"),
                 username=os.getenv("DB_USER", "default"),
                 password=os.getenv("DB_PASSWORD", ""),
                 backup_path=os.getenv("DB_BACKUP_PATH", "./data/backup"),
+                db_baostock=os.getenv("DB_BAOSTOCK", "baostock_data"),
+                db_starlight=os.getenv("DB_STARLIGHT", "starlight"),
+                db_miniqmt=os.getenv("DB_MINIQMT", "miniqmt_data"),
+                db_akshare=os.getenv("DB_AKSHARE", "akshare_data"),
             ),
             api=APIConfig(
                 host=os.getenv("API_HOST", "0.0.0.0"),
