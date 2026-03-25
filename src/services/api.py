@@ -453,6 +453,180 @@ async def get_kline(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==================== AmazingData 直接调用接口 ====================
+
+class AmazingDataRequest(BaseModel):
+    """AmazingData 接口调用请求"""
+    method: str = Field(..., description="方法名，如 get_code_list, get_stock_basic 等")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="方法参数")
+
+
+@app.post("/api/amazingdata/call")
+async def call_amazingdata_method(request: AmazingDataRequest):
+    """直接调用 AmazingData 方法"""
+    try:
+        from src.collectors.starlight.client import get_client
+        
+        # 获取客户端
+        client = get_client()
+        if not client.is_connected():
+            if not client.connect():
+                raise HTTPException(
+                    status_code=500,
+                    detail="无法连接到 AmazingData 服务"
+                )
+        
+        # 验证方法是否存在
+        if not hasattr(client, request.method):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"方法 {request.method} 不存在"
+            )
+        
+        # 获取方法
+        method = getattr(client, request.method)
+        
+        # 调用方法
+        logger.info(f"API 调用: {request.method}({request.parameters})")
+        result = method(**request.parameters)
+        
+        # 处理返回结果
+        if isinstance(result, pd.DataFrame):
+            data = result.to_dict(orient="records")
+            total = len(result)
+        elif isinstance(result, dict):
+            # 如果是字典，检查是否包含 DataFrame
+            data = {}
+            total = 0
+            for key, value in result.items():
+                if isinstance(value, pd.DataFrame):
+                    data[key] = value.to_dict(orient="records")
+                    total += len(value)
+                else:
+                    data[key] = value
+        elif isinstance(result, list):
+            data = result
+            total = len(result)
+        else:
+            data = result
+            total = 1 if result is not None else 0
+        
+        return APIResponse(
+            code=200,
+            message="调用成功",
+            data=data,
+            total=total
+        ).to_dict()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AmazingData 方法调用失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/amazingdata/methods")
+async def list_amazingdata_methods():
+    """列出所有可用的 AmazingData 方法"""
+    try:
+        from src.collectors.starlight.client import get_client
+        
+        client = get_client()
+        
+        # 手动定义方法分类，基于实际的客户端方法
+        methods_info = {
+            "基础数据": [
+                {"name": "get_code_list", "description": "获取股票代码列表"},
+                {"name": "get_code_info", "description": "获取代码信息"},
+                {"name": "get_calendar", "description": "获取交易日历"},
+                {"name": "get_stock_basic", "description": "获取股票基础信息"},
+                {"name": "get_backward_factor", "description": "获取后复权因子"},
+                {"name": "get_adj_factor", "description": "获取前复权因子"},
+                {"name": "get_hist_code_list", "description": "获取历史代码列表"},
+                {"name": "get_history_stock_status", "description": "获取历史股票状态"},
+                {"name": "get_bj_code_mapping", "description": "获取北交所代码映射"},
+            ],
+            "行情数据": [
+                {"name": "query_kline", "description": "获取K线数据"},
+                {"name": "query_snapshot", "description": "获取快照数据"},
+            ],
+            "财务数据": [
+                {"name": "get_balance_sheet", "description": "获取资产负债表"},
+                {"name": "get_cash_flow", "description": "获取现金流量表"},
+                {"name": "get_income", "description": "获取利润表"},
+                {"name": "get_profit_express", "description": "获取业绩快报"},
+                {"name": "get_profit_notice", "description": "获取业绩预告"},
+            ],
+            "股东数据": [
+                {"name": "get_share_holder", "description": "获取十大股东"},
+                {"name": "get_holder_num", "description": "获取股东户数"},
+                {"name": "get_equity_structure", "description": "获取股本结构"},
+                {"name": "get_equity_pledge_freeze", "description": "获取股权质押冻结"},
+                {"name": "get_equity_restricted", "description": "获取限售股解禁"},
+                {"name": "get_dividend", "description": "获取分红送股"},
+                {"name": "get_right_issue", "description": "获取配股"},
+            ],
+            "其他数据": [
+                {"name": "get_margin_summary", "description": "获取融资融券汇总"},
+                {"name": "get_margin_detail", "description": "获取融资融券明细"},
+                {"name": "get_long_hu_bang", "description": "获取龙虎榜"},
+                {"name": "get_block_trading", "description": "获取大宗交易"},
+            ],
+            "指数数据": [
+                {"name": "get_index_constituent", "description": "获取指数成分股"},
+                {"name": "get_index_weight", "description": "获取指数权重"},
+            ],
+            "行业数据": [
+                {"name": "get_industry_base_info", "description": "获取行业基本信息"},
+                {"name": "get_industry_constituent", "description": "获取行业成分股"},
+                {"name": "get_industry_weight", "description": "获取行业权重"},
+                {"name": "get_industry_daily", "description": "获取行业日线"},
+            ],
+            "可转债数据": [
+                {"name": "get_kzz_issuance", "description": "获取可转债发行"},
+                {"name": "get_kzz_share", "description": "获取可转债份额"},
+                {"name": "get_kzz_conv", "description": "获取可转债转股"},
+                {"name": "get_kzz_conv_change", "description": "获取可转债转股变动"},
+                {"name": "get_kzz_corr", "description": "获取可转债修正"},
+                {"name": "get_kzz_call", "description": "获取可转债赎回"},
+                {"name": "get_kzz_put", "description": "获取可转债回售"},
+                {"name": "get_kzz_suspend", "description": "获取可转债停复牌"},
+                {"name": "get_kzz_put_call_item", "description": "获取可转债回售赎回条款"},
+                {"name": "get_kzz_put_explanation", "description": "获取可转债回售说明"},
+                {"name": "get_kzz_call_explanation", "description": "获取可转债赎回说明"},
+            ],
+            "ETF数据": [
+                {"name": "get_etf_pcf", "description": "获取ETF申赎数据"},
+                {"name": "get_fund_share", "description": "获取基金份额"},
+                {"name": "get_fund_iopv", "description": "获取基金IOPV"},
+            ],
+            "期权数据": [
+                {"name": "get_option_basic_info", "description": "获取期权基本资料"},
+                {"name": "get_option_std_ctr_specs", "description": "获取期权标准合约"},
+                {"name": "get_option_mon_ctr_specs", "description": "获取期权月合约"},
+                {"name": "get_future_code_list", "description": "获取期货代码列表"},
+                {"name": "get_option_code_list", "description": "获取期权代码列表"},
+            ],
+            "国债数据": [
+                {"name": "get_treasury_yield", "description": "获取国债收益率"},
+            ],
+        }
+        
+        # 计算总方法数
+        total_methods = sum(len(methods) for methods in methods_info.values())
+        
+        return APIResponse(
+            code=200,
+            message="success",
+            data=methods_info,
+            total=total_methods
+        ).to_dict()
+        
+    except Exception as e:
+        logger.error(f"获取方法列表失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== QMT API 路由 ====================
 
 # 导入 QMT 模块
@@ -551,9 +725,58 @@ async def qmt_query_data(
 # 启动应用
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        app,
-        host=config.api.host,
-        port=config.api.port,
-        reload=config.api.reload
-    )
+    import sys
+    from pathlib import Path
+    
+    # 添加项目根目录到 Python 路径
+    project_root = Path(__file__).parent.parent.parent
+    sys.path.insert(0, str(project_root))
+    
+    print("=" * 60)
+    print("启动 AmazingData API 服务")
+    print("=" * 60)
+    
+    # 检查环境
+    try:
+        print(f"✓ 配置加载成功")
+        print(f"  - 主机: {config.api.host}")
+        print(f"  - 端口: {config.api.port}")
+        print(f"  - 调试模式: {config.api.reload}")
+    except Exception as e:
+        print(f"✗ 配置加载失败: {e}")
+        sys.exit(1)
+    
+    # 检查 AmazingData 客户端
+    try:
+        from src.collectors.starlight.client import get_client
+        client = get_client()
+        print(f"✓ AmazingData 客户端初始化成功")
+        print(f"  - 用户名: {client.username}")
+    except Exception as e:
+        print(f"✗ AmazingData 客户端初始化失败: {e}")
+        print("  请检查配置文件中的用户名和密码")
+        print("  提示：请确保 .env 文件已正确配置")
+    
+    print("\n" + "=" * 60)
+    print("API 服务启动中...")
+    print("=" * 60)
+    print(f"访问地址: http://{config.api.host}:{config.api.port}")
+    print(f"API 文档: http://{config.api.host}:{config.api.port}/docs")
+    print(f"健康检查: http://{config.api.host}:{config.api.port}/health")
+    print(f"测试页面: amazingdata_api_test.html")
+    print("按 Ctrl+C 停止服务")
+    print("=" * 60)
+    
+    try:
+        uvicorn.run(
+            app,
+            host=config.api.host,
+            port=config.api.port,
+            reload=config.api.reload,
+            log_level="info"
+        )
+    except KeyboardInterrupt:
+        print("\n服务已停止")
+    except Exception as e:
+        print(f"服务启动失败: {e}")
+        sys.exit(1)
