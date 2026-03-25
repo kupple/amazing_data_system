@@ -3,11 +3,9 @@ Starlight 同步共享工具。
 """
 from __future__ import annotations
 
-import json
 import time
 import traceback
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -17,12 +15,6 @@ from src.common.logger import logger
 
 class StarlightSyncSupport:
     """同步脚本与调度器共用的辅助能力。"""
-
-    _checkpoint_file = (
-        Path(__file__).resolve().parents[3]
-        / "tmp"
-        / "starlight_sync_checkpoints.json"
-    )
 
     @staticmethod
     def _lowercase_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -104,11 +96,15 @@ class StarlightSyncSupport:
             "end_date": int(end_date.strftime("%Y%m%d")),
         }
 
-    def _should_skip_table_sync(self, table_name: str, force: bool = False) -> bool:
+    def _should_skip_table_sync(
+        self,
+        table_name: str,
+        force: bool = False,
+        checkpoint_keys: Optional[List[str]] = None,
+    ) -> bool:
         """如果该表今天已经同步成功，则跳过。"""
         if force:
             return False
-
         try:
             status = self.db.get_table_sync_status(table_name)
         except Exception as exc:
@@ -157,35 +153,19 @@ class StarlightSyncSupport:
         return [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
 
     def _load_checkpoints(self) -> Dict[str, int]:
-        try:
-            if self._checkpoint_file.exists():
-                return json.loads(self._checkpoint_file.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning(f"读取同步 checkpoint 失败: {exc}")
         return {}
 
     def _save_checkpoints(self, checkpoints: Dict[str, int]):
-        try:
-            self._checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
-            self._checkpoint_file.write_text(
-                json.dumps(checkpoints, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            logger.warning(f"写入同步 checkpoint 失败: {exc}")
+        return
 
     def _set_checkpoint(self, checkpoint_key: str, next_batch_index: int):
-        checkpoints = self._load_checkpoints()
-        checkpoints[checkpoint_key] = next_batch_index
-        self._save_checkpoints(checkpoints)
+        return
 
     def _clear_checkpoint(self, checkpoint_key: Optional[str]):
-        if not checkpoint_key:
-            return
-        checkpoints = self._load_checkpoints()
-        if checkpoint_key in checkpoints:
-            del checkpoints[checkpoint_key]
-            self._save_checkpoints(checkpoints)
+        return
+
+    def _has_active_checkpoint(self, checkpoint_keys: List[str]) -> bool:
+        return False
 
     def _iter_batches(
         self,
@@ -194,12 +174,7 @@ class StarlightSyncSupport:
         checkpoint_key: Optional[str] = None,
     ) -> List[Tuple[int, List[str]]]:
         batches = self._chunk(items, batch_size)
-        start_index = 0
-        if checkpoint_key:
-            start_index = int(self._load_checkpoints().get(checkpoint_key, 0) or 0)
-            if start_index > 0:
-                logger.info(f"从 checkpoint 恢复 {checkpoint_key}，跳过前 {start_index} 个批次")
-        return list(enumerate(batches[start_index:], start=start_index))
+        return list(enumerate(batches, start=0))
 
     def _iter_code_batch_results(
         self,

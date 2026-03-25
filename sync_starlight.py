@@ -120,7 +120,7 @@ class StarlightSyncManager(StarlightSyncSupport):
         
         # 1.3 证券基础信息
         logger.info("1.3 同步证券基础信息...")
-        if not self._should_skip_table_sync("stock_basic"):
+        if not self._should_skip_table_sync("stock_basic", checkpoint_keys=["sync_basic.stock_basic"]):
             try:
                 code_list = self.get_all_codes()
                 self.db.execute("DROP TABLE IF EXISTS stock_basic")
@@ -145,13 +145,13 @@ class StarlightSyncManager(StarlightSyncSupport):
         
         # 1.4 复权因子
         logger.info("1.4 同步复权因子...")
-        if self._should_skip_table_sync("backward_factor") and self._should_skip_table_sync("adj_factor"):
+        if self._should_skip_table_sync("backward_factor", checkpoint_keys=["sync_basic.backward_factor"]) and self._should_skip_table_sync("adj_factor", checkpoint_keys=["sync_basic.adj_factor"]):
             return
         try:
             code_list = self.get_all_codes()
             
             # 后复权因子 - 当前 SDK 返回 index=日期、columns=代码 的 DataFrame
-            if not self._should_skip_table_sync("backward_factor"):
+            if not self._should_skip_table_sync("backward_factor", checkpoint_keys=["sync_basic.backward_factor"]):
                 logger.info("  同步后复权因子...")
                 factor_frames = []
                 for batch_index, batch_codes in self._iter_batches(
@@ -159,7 +159,11 @@ class StarlightSyncManager(StarlightSyncSupport):
                     batch_size=1050,
                     checkpoint_key="sync_basic.backward_factor",
                 ):
-                    backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
+                    backward_factor = self._call_client_method(
+                        self.client.get_backward_factor,
+                        code_list=batch_codes,
+                        is_local=False,
+                    )
                     reshaped = self._reshape_factor_dataframe(backward_factor, "backward_factor")
                     if not reshaped.empty:
                         factor_frames.append(reshaped)
@@ -177,7 +181,7 @@ class StarlightSyncManager(StarlightSyncSupport):
                 self._clear_checkpoint("sync_basic.backward_factor")
             
             # 前复权因子 - 当前 SDK 返回 index=日期、columns=代码 的 DataFrame
-            if not self._should_skip_table_sync("adj_factor"):
+            if not self._should_skip_table_sync("adj_factor", checkpoint_keys=["sync_basic.adj_factor"]):
                 logger.info("  同步前复权因子...")
                 factor_frames = []
                 for batch_index, batch_codes in self._iter_batches(
@@ -185,7 +189,11 @@ class StarlightSyncManager(StarlightSyncSupport):
                     batch_size=1050,
                     checkpoint_key="sync_basic.adj_factor",
                 ):
-                    adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
+                    adj_factor = self._call_client_method(
+                        self.client.get_adj_factor,
+                        code_list=batch_codes,
+                        is_local=False,
+                    )
                     reshaped = self._reshape_factor_dataframe(adj_factor, "adj_factor")
                     if not reshaped.empty:
                         factor_frames.append(reshaped)

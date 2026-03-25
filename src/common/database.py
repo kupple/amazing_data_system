@@ -272,7 +272,7 @@ class ClickHouseManager:
                 normalized[col] = parsed.astype("datetime64[ns]")
             elif is_object_dtype(series.dtype) or is_string_dtype(series.dtype):
                 normalized[col] = series.map(
-                    lambda value: None
+                    lambda value: ""
                     if pd.isna(value)
                     else str(value)
                 )
@@ -294,7 +294,7 @@ class ClickHouseManager:
 
             if "STRING" in upper_type:
                 normalized[col] = series.map(
-                    lambda value: None if pd.isna(value) else str(value)
+                    lambda value: "" if pd.isna(value) else str(value)
                 )
             elif upper_type == "DATE":
                 parsed = pd.to_datetime(series, errors="coerce")
