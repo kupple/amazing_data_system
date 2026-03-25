@@ -1,6 +1,13 @@
 """
 FastAPI 服务模块
 """
+import sys
+from pathlib import Path
+
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, date
 from fastapi import FastAPI, Query, HTTPException, Depends
@@ -469,7 +476,7 @@ async def call_amazingdata_method(request: AmazingDataRequest):
         
         # 获取客户端
         client = get_client()
-        if not client.is_connected():
+        if not client.is_connected:
             if not client.connect():
                 raise HTTPException(
                     status_code=500,
@@ -485,6 +492,13 @@ async def call_amazingdata_method(request: AmazingDataRequest):
         
         # 获取方法
         method = getattr(client, request.method)
+        
+        # 检查是否为可调用对象
+        if not callable(method):
+            raise HTTPException(
+                status_code=400,
+                detail=f"属性 {request.method} 不是可调用的方法"
+            )
         
         # 调用方法
         logger.info(f"API 调用: {request.method}({request.parameters})")
@@ -521,6 +535,7 @@ async def call_amazingdata_method(request: AmazingDataRequest):
     except HTTPException:
         raise
     except Exception as e:
+        print(e)
         logger.error(f"AmazingData 方法调用失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -725,12 +740,6 @@ async def qmt_query_data(
 # 启动应用
 if __name__ == "__main__":
     import uvicorn
-    import sys
-    from pathlib import Path
-    
-    # 添加项目根目录到 Python 路径
-    project_root = Path(__file__).parent.parent.parent
-    sys.path.insert(0, str(project_root))
     
     print("=" * 60)
     print("启动 AmazingData API 服务")

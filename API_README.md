@@ -16,8 +16,15 @@ cp .env.example .env
 ### 2. 启动 API 服务
 
 ```bash
-# 直接启动 API 服务
+# 方法1: 直接启动（推荐）
 python src/services/api.py
+
+# 方法2: 使用 uvicorn 启动
+uvicorn src.services.api:app --host 0.0.0.0 --port 8000
+
+# 方法3: 从项目根目录启动
+cd /path/to/your/project
+python -m src.services.api
 ```
 
 ### 3. 验证服务状态
