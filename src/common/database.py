@@ -183,6 +183,7 @@ class ClickHouseManager:
             logger.info(f"创建表 {table_name}")
         else:
             self._ensure_table_schema(table_name, df)
+            df = self._coerce_dataframe_to_table_schema(df, table_name)
         
         if unique_keys and if_exists == "append":
             # 增量插入，去重
@@ -275,6 +276,35 @@ class ClickHouseManager:
                     if pd.isna(value)
                     else str(value)
                 )
+
+        return normalized
+
+    def _coerce_dataframe_to_table_schema(self, df: pd.DataFrame, table_name: str) -> pd.DataFrame:
+        """按目标表 schema 强制对齐 DataFrame 列类型。"""
+        normalized = df.copy()
+        table_columns = self._get_table_columns(table_name)
+
+        for col in normalized.columns:
+            ch_type = table_columns.get(col, "")
+            if not ch_type:
+                continue
+
+            series = normalized[col]
+            upper_type = ch_type.upper()
+
+            if "STRING" in upper_type:
+                normalized[col] = series.map(
+                    lambda value: None if pd.isna(value) else str(value)
+                )
+            elif "DATETIME" in upper_type:
+                parsed = pd.to_datetime(series, errors="coerce")
+                if getattr(parsed.dt, "tz", None) is not None:
+                    parsed = parsed.dt.tz_localize(None)
+                normalized[col] = parsed.astype("datetime64[ns]")
+            elif any(token in upper_type for token in ("INT", "UINT")):
+                normalized[col] = pd.to_numeric(series, errors="coerce")
+            elif "FLOAT" in upper_type or "DECIMAL" in upper_type:
+                normalized[col] = pd.to_numeric(series, errors="coerce")
 
         return normalized
     

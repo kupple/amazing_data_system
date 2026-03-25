@@ -172,6 +172,7 @@ class StarlightScheduler(StarlightSyncSupport):
                 checkpoint_key="scheduler.basic.stock_basic",
             ):
                 if isinstance(stock_basic, pd.DataFrame) and not stock_basic.empty:
+                    stock_basic = self._lowercase_columns(stock_basic)
                     self.db.insert_dataframe(stock_basic, "stock_basic")
                     total_rows += len(stock_basic)
                 self._set_checkpoint("scheduler.basic.stock_basic", batch_index + 1)
