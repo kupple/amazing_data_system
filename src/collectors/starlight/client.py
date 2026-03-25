@@ -185,6 +185,17 @@ class AmazingDataClient:
         self._market = None  # MarketData 实例
         self._connected = False
 
+    def _build_clean_cache_path(self, cache_name: str) -> str:
+        """为存在兼容问题的缓存构造独立目录。"""
+        cache_dir = os.path.join(os.getcwd(), "amazing_data_cache_fresh", cache_name)
+        os.makedirs(cache_dir, exist_ok=True)
+        return cache_dir.replace("\\", "//") + "//"
+
+    @staticmethod
+    def _is_factor_cache_compat_error(exc: Exception) -> bool:
+        message = str(exc)
+        return isinstance(exc, AssertionError) or "unrecognized index type" in message.lower()
+
     def connect(self) -> bool:
         """连接服务器 - 按文档实现"""
         if not _check_sdk():
@@ -329,22 +340,44 @@ class AmazingDataClient:
         """3.5.2.5 复权因子（后复权因子）"""
         if not self._connected:
             self.connect()
-        return self._base.get_backward_factor(
-            code_list, 
-            local_path=self.local_path, 
-            is_local=is_local
-        )
+        try:
+            return self._base.get_backward_factor(
+                code_list,
+                local_path=self.local_path,
+                is_local=is_local
+            )
+        except Exception as exc:
+            if not self._is_factor_cache_compat_error(exc):
+                raise
+            clean_path = self._build_clean_cache_path("backward_factor")
+            logger.warning(f"后复权因子缓存兼容失败，改用干净缓存目录重试: {clean_path}")
+            return self._base.get_backward_factor(
+                code_list,
+                local_path=clean_path,
+                is_local=False
+            )
 
     @retry(max_attempts=3, data_type="adj_factor")
     def get_adj_factor(self, code_list: List[str], is_local: bool = True) -> pd.DataFrame:
         """3.5.2.6 复权因子（单次复权因子）"""
         if not self._connected:
             self.connect()
-        return self._base.get_adj_factor(
-            code_list, 
-            local_path=self.local_path, 
-            is_local=is_local
-        )
+        try:
+            return self._base.get_adj_factor(
+                code_list,
+                local_path=self.local_path,
+                is_local=is_local
+            )
+        except Exception as exc:
+            if not self._is_factor_cache_compat_error(exc):
+                raise
+            clean_path = self._build_clean_cache_path("adj_factor")
+            logger.warning(f"前复权因子缓存兼容失败，改用干净缓存目录重试: {clean_path}")
+            return self._base.get_adj_factor(
+                code_list,
+                local_path=clean_path,
+                is_local=False
+            )
 
     @retry(max_attempts=3, data_type="hist_code_list")
     def get_hist_code_list(self, security_type: str, start_date: int, end_date: int) -> List[str]:
