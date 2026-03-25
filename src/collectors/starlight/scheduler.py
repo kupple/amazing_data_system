@@ -13,10 +13,11 @@ import pandas as pd
 from src.common.config import config
 from src.common.logger import logger
 from src.collectors.starlight.client import get_client, AmazingDataClient
+from src.collectors.starlight.sync_shared import StarlightSyncSupport
 from src.common.database import get_db, ClickHouseManager
 
 
-class StarlightScheduler:
+class StarlightScheduler(StarlightSyncSupport):
     """Starlight 数据同步调度器"""
     
     def __init__(self):
@@ -36,75 +37,6 @@ class StarlightScheduler:
             # 使用 starlight 数据源的数据库
             self.db = get_db("starlight")
 
-    @staticmethod
-    def _lowercase_columns(df: pd.DataFrame) -> pd.DataFrame:
-        normalized = df.copy()
-        normalized.columns = [str(col).lower() for col in normalized.columns]
-        return normalized
-
-    @staticmethod
-    def _find_existing_column(df: pd.DataFrame, candidates: List[str]) -> str:
-        for column in candidates:
-            if column in df.columns:
-                return column
-        raise KeyError(f"未找到可用列，候选列: {candidates}")
-
-    @staticmethod
-    def _iter_batches(items: List[str], batch_size: int = 1):
-        for i in range(0, len(items), batch_size):
-            yield items[i:i + batch_size]
-
-    @staticmethod
-    def _reshape_factor_dataframe(df: pd.DataFrame, value_column: str) -> pd.DataFrame:
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["date", "code", value_column])
-
-        normalized = df.copy()
-        normalized.index = pd.to_datetime(normalized.index, errors="coerce")
-        normalized = normalized[~normalized.index.isna()]
-        normalized.index.name = "date"
-        normalized.columns = [str(col) for col in normalized.columns]
-        long_df = normalized.stack().rename(value_column).reset_index()
-        long_df.columns = ["date", "code", value_column]
-        long_df["date"] = pd.to_datetime(long_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        return long_df.dropna(subset=["date"])
-
-    def _fetch_by_code_batches(
-        self,
-        method,
-        code_list: List[str],
-        batch_size: int = 1,
-        sleep_seconds: float = 0.0,
-        **kwargs,
-    ):
-        merged_dict = None
-        merged_frames = []
-
-        for batch_codes in self._iter_batches(code_list, batch_size=batch_size):
-            try:
-                result = method(code_list=batch_codes, **kwargs)
-            except Exception as exc:
-                logger.warning(f"批量请求失败，codes={batch_codes}: {exc}")
-                continue
-
-            if isinstance(result, dict):
-                if merged_dict is None:
-                    merged_dict = {}
-                for key, value in result.items():
-                    if value is not None:
-                        merged_dict[key] = value
-            elif isinstance(result, pd.DataFrame):
-                if not result.empty:
-                    merged_frames.append(result)
-
-            if sleep_seconds > 0:
-                time.sleep(sleep_seconds)
-
-        if merged_dict is not None:
-            return merged_dict
-        if merged_frames:
-            return pd.concat(merged_frames, ignore_index=True)
-        return pd.DataFrame()
     
     def start(self):
         """启动调度器"""
@@ -235,6 +167,7 @@ class StarlightScheduler:
                 code_list,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="scheduler.basic.stock_basic",
             )
             
             if not stock_basic.empty:
@@ -253,12 +186,17 @@ class StarlightScheduler:
             
             # 后复权因子
             factor_frames = []
-            for batch_codes in self._iter_batches(code_list, batch_size=1):
+            for batch_index, batch_codes in self._iter_batches(
+                code_list,
+                batch_size=1,
+                checkpoint_key="scheduler.basic.backward_factor",
+            ):
                 backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
                 reshaped = self._reshape_factor_dataframe(backward_factor, "backward_factor")
                 if not reshaped.empty:
                     factor_frames.append(reshaped)
                 time.sleep(0.02)
+                self._set_checkpoint("scheduler.basic.backward_factor", batch_index + 1)
             backward_factor = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
             if not backward_factor.empty:
                 self.db.incremental_update(
@@ -269,15 +207,21 @@ class StarlightScheduler:
                 )
                 logger.info(f"后复权因子已更新，共 {len(backward_factor)} 条")
                 results.append({"type": "backward_factor", "success": True, "count": len(backward_factor)})
+            self._clear_checkpoint("scheduler.basic.backward_factor")
             
             # 前复权因子
             factor_frames = []
-            for batch_codes in self._iter_batches(code_list, batch_size=1):
+            for batch_index, batch_codes in self._iter_batches(
+                code_list,
+                batch_size=1,
+                checkpoint_key="scheduler.basic.adj_factor",
+            ):
                 adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
                 reshaped = self._reshape_factor_dataframe(adj_factor, "adj_factor")
                 if not reshaped.empty:
                     factor_frames.append(reshaped)
                 time.sleep(0.02)
+                self._set_checkpoint("scheduler.basic.adj_factor", batch_index + 1)
             adj_factor = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
             if not adj_factor.empty:
                 self.db.incremental_update(
@@ -288,6 +232,7 @@ class StarlightScheduler:
                 )
                 logger.info(f"前复权因子已更新，共 {len(adj_factor)} 条")
                 results.append({"type": "adj_factor", "success": True, "count": len(adj_factor)})
+            self._clear_checkpoint("scheduler.basic.adj_factor")
                 
         except Exception as e:
             logger.error(f"同步复权因子失败: {e}")
@@ -348,8 +293,12 @@ class StarlightScheduler:
         
         # 分批处理，每次50只股票（同步所有股票）
         batch_size = 50
-        for i in range(0, len(code_list), batch_size):
-            batch_codes = code_list[i:i+batch_size]
+        completed = True
+        for batch_index, batch_codes in self._iter_batches(
+            code_list,
+            batch_size=batch_size,
+            checkpoint_key="scheduler.market.kline",
+        ):
             
             try:
                 # 获取日K线
@@ -375,16 +324,21 @@ class StarlightScheduler:
                             date_column=time_column
                         )
                 
-                logger.info(f"已同步 {i+len(batch_codes)}/{len(code_list)} 只股票的K线数据")
-                results.append({"batch": i//batch_size, "success": True, "count": len(batch_codes)})
+                logger.info(f"已同步 {(batch_index + 1) * batch_size}/{len(code_list)} 只股票的K线数据")
+                results.append({"batch": batch_index, "success": True, "count": len(batch_codes)})
+                self._set_checkpoint("scheduler.market.kline", batch_index + 1)
                 
             except Exception as e:
-                logger.error(f"同步第 {i//batch_size} 批K线数据失败: {e}")
-                results.append({"batch": i//batch_size, "success": False, "error": str(e)})
+                logger.error(f"同步第 {batch_index} 批K线数据失败: {e}")
+                results.append({"batch": batch_index, "success": False, "error": str(e)})
+                completed = False
+                break
             
             # 避免请求过快
             time.sleep(1)
         
+        if completed:
+            self._clear_checkpoint("scheduler.market.kline")
         return {"task": "sync_market_data", "results": results}
     
     # ========== 财务数据同步 ==========
@@ -431,6 +385,7 @@ class StarlightScheduler:
                     code_list,
                     batch_size=1,
                     sleep_seconds=0.02,
+                    checkpoint_key=f"scheduler.financial.{data_type}",
                     is_local=(not is_first_sync),
                 )
                 
@@ -517,6 +472,7 @@ class StarlightScheduler:
                     code_list,
                     batch_size=1,
                     sleep_seconds=0.02,
+                    checkpoint_key=f"scheduler.holder.{data_type}",
                     is_local=(not is_first_sync),
                 )
                 
@@ -589,6 +545,7 @@ class StarlightScheduler:
                 code_list,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="scheduler.other.dragon_tiger",
                 is_local=(not is_first_sync),
             )
             if not dragon_tiger.empty:
@@ -614,6 +571,7 @@ class StarlightScheduler:
                 code_list,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="scheduler.other.block_trade",
                 is_local=(not is_first_sync),
             )
             if not block_trade.empty:

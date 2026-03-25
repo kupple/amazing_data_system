@@ -14,11 +14,12 @@ from typing import List, Set, Dict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.collectors.starlight.client import get_client
+from src.collectors.starlight.sync_shared import StarlightSyncSupport
 from src.common.database import get_db
 from src.common.logger import logger
 
 
-class StarlightSyncManager:
+class StarlightSyncManager(StarlightSyncSupport):
     """Starlight 数据同步管理器"""
     
     def __init__(self):
@@ -64,119 +65,6 @@ class StarlightSyncManager:
         
         return synced
 
-    @staticmethod
-    def _lowercase_columns(df: pd.DataFrame) -> pd.DataFrame:
-        """统一列名为小写。"""
-        normalized = df.copy()
-        normalized.columns = [str(col).lower() for col in normalized.columns]
-        return normalized
-
-    @staticmethod
-    def _find_existing_column(df: pd.DataFrame, candidates: List[str]) -> str:
-        """返回 DataFrame 中第一个存在的候选列名。"""
-        for column in candidates:
-            if column in df.columns:
-                return column
-        raise KeyError(f"未找到可用列，候选列: {candidates}")
-
-    def _get_latest_date_with_fallback(self, table_name: str, candidates: List[str]) -> str:
-        """按候选列顺序获取最新日期。"""
-        for column in candidates:
-            try:
-                latest_date = self.db.get_latest_date(table_name, column)
-            except Exception:
-                latest_date = None
-            if latest_date and latest_date != "None":
-                return latest_date
-        return None
-
-    def _build_incremental_date_range(
-        self,
-        table_name: str,
-        date_columns: List[str],
-        first_sync_days: int = 365,
-        fallback_days: int = 30,
-    ) -> Dict[str, int]:
-        """根据已同步数据推导下一次查询的日期范围。"""
-        end_date = datetime.now()
-        if not self.db.table_exists(table_name):
-            start_date = end_date - timedelta(days=first_sync_days)
-        else:
-            latest_date = self._get_latest_date_with_fallback(table_name, date_columns)
-            if latest_date:
-                try:
-                    start_date = datetime.strptime(str(latest_date)[:10], "%Y-%m-%d") - timedelta(days=1)
-                except (TypeError, ValueError):
-                    start_date = end_date - timedelta(days=fallback_days)
-            else:
-                start_date = end_date - timedelta(days=fallback_days)
-
-        return {
-            "begin_date": int(start_date.strftime("%Y%m%d")),
-            "end_date": int(end_date.strftime("%Y%m%d")),
-        }
-
-    @staticmethod
-    def _reshape_factor_dataframe(df: pd.DataFrame, value_column: str) -> pd.DataFrame:
-        """将 index=日期、columns=代码 的复权因子宽表转成长表。"""
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["date", "code", value_column])
-
-        normalized = df.copy()
-        normalized.index = pd.to_datetime(normalized.index, errors="coerce")
-        normalized = normalized[~normalized.index.isna()]
-        normalized.index.name = "date"
-        normalized.columns = [str(col) for col in normalized.columns]
-
-        long_df = normalized.stack().rename(value_column).reset_index()
-        long_df.columns = ["date", "code", value_column]
-        long_df["date"] = pd.to_datetime(long_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        return long_df.dropna(subset=["date"])
-
-    @staticmethod
-    def _iter_batches(items: List[str], batch_size: int = 1):
-        """按批次迭代代码列表。"""
-        for i in range(0, len(items), batch_size):
-            yield items[i:i + batch_size]
-
-    def _fetch_by_code_batches(
-        self,
-        method,
-        code_list: List[str],
-        batch_size: int = 1,
-        sleep_seconds: float = 0.0,
-        **kwargs,
-    ):
-        """按股票分批调用接口，并自动合并 DataFrame / dict 结果。"""
-        merged_dict = None
-        merged_frames = []
-
-        for batch_codes in self._iter_batches(code_list, batch_size=batch_size):
-            try:
-                result = method(code_list=batch_codes, **kwargs)
-            except Exception as exc:
-                logger.warning(f"批量请求失败，codes={batch_codes}: {exc}")
-                continue
-
-            if isinstance(result, dict):
-                if merged_dict is None:
-                    merged_dict = {}
-                for key, value in result.items():
-                    if value is None:
-                        continue
-                    merged_dict[key] = value
-            elif isinstance(result, pd.DataFrame):
-                if not result.empty:
-                    merged_frames.append(result)
-
-            if sleep_seconds > 0:
-                time.sleep(sleep_seconds)
-
-        if merged_dict is not None:
-            return merged_dict
-        if merged_frames:
-            return pd.concat(merged_frames, ignore_index=True)
-        return pd.DataFrame()
     
     def sync_basic_data(self):
         """同步基础数据"""
@@ -245,6 +133,7 @@ class StarlightSyncManager:
                 code_list,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="sync_basic.stock_basic",
             )
             
             if not stock_basic.empty:
@@ -262,12 +151,17 @@ class StarlightSyncManager:
             # 后复权因子 - 当前 SDK 返回 index=日期、columns=代码 的 DataFrame
             logger.info("  同步后复权因子...")
             factor_frames = []
-            for batch_codes in self._iter_batches(code_list, batch_size=1):
+            for batch_index, batch_codes in self._iter_batches(
+                code_list,
+                batch_size=1,
+                checkpoint_key="sync_basic.backward_factor",
+            ):
                 backward_factor = self.client.get_backward_factor(batch_codes, is_local=False)
                 reshaped = self._reshape_factor_dataframe(backward_factor, "backward_factor")
                 if not reshaped.empty:
                     factor_frames.append(reshaped)
                 time.sleep(0.02)
+                self._set_checkpoint("sync_basic.backward_factor", batch_index + 1)
             merged_df = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
             if not merged_df.empty:
                 self.db.incremental_update(
@@ -277,16 +171,22 @@ class StarlightSyncManager:
                     date_column="date"
                 )
                 logger.info(f"  ✓ 后复权因子已更新: {len(merged_df)} 条")
+            self._clear_checkpoint("sync_basic.backward_factor")
             
             # 前复权因子 - 当前 SDK 返回 index=日期、columns=代码 的 DataFrame
             logger.info("  同步前复权因子...")
             factor_frames = []
-            for batch_codes in self._iter_batches(code_list, batch_size=1):
+            for batch_index, batch_codes in self._iter_batches(
+                code_list,
+                batch_size=1,
+                checkpoint_key="sync_basic.adj_factor",
+            ):
                 adj_factor = self.client.get_adj_factor(batch_codes, is_local=False)
                 reshaped = self._reshape_factor_dataframe(adj_factor, "adj_factor")
                 if not reshaped.empty:
                     factor_frames.append(reshaped)
                 time.sleep(0.02)
+                self._set_checkpoint("sync_basic.adj_factor", batch_index + 1)
             merged_df = pd.concat(factor_frames, ignore_index=True) if factor_frames else pd.DataFrame()
             if not merged_df.empty:
                 self.db.incremental_update(
@@ -296,6 +196,7 @@ class StarlightSyncManager:
                     date_column="date"
                 )
                 logger.info(f"  ✓ 前复权因子已更新: {len(merged_df)} 条")
+            self._clear_checkpoint("sync_basic.adj_factor")
                 
         except Exception as e:
             logger.error(f"✗ 同步复权因子失败: {e}")
@@ -367,11 +268,13 @@ class StarlightSyncManager:
         total_batches = (len(codes_to_sync) + batch_size - 1) // batch_size
         self.total_records = 0
         self.start_time = time.time()
+        completed = True
         
-        for batch_idx in range(total_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, len(codes_to_sync))
-            batch_codes = codes_to_sync[start_idx:end_idx]
+        for batch_idx, batch_codes in self._iter_batches(
+            codes_to_sync,
+            batch_size=batch_size,
+            checkpoint_key="sync_kline_data",
+        ):
             
             try:
                 # 获取K线数据
@@ -404,16 +307,21 @@ class StarlightSyncManager:
                 
                 # 显示进度
                 self._print_progress(batch_idx + 1, total_batches, len(codes_to_sync))
+                self._set_checkpoint("sync_kline_data", batch_idx + 1)
                 
             except Exception as e:
                 logger.error(f"✗ 批次 {batch_idx + 1} 同步失败: {e}")
                 import traceback
                 traceback.print_exc()
+                completed = False
+                break
             
             # 避免请求过快
             time.sleep(1)
         
         logger.info(f"\n✓ K线数据同步完成，共 {self.total_records} 条记录")
+        if completed:
+            self._clear_checkpoint("sync_kline_data")
     
     def sync_snapshot_data(self, force: bool = False):
         """同步快照数据（智能增量）"""
@@ -469,11 +377,13 @@ class StarlightSyncManager:
         total_batches = (len(codes_to_sync) + batch_size - 1) // batch_size
         self.total_records = 0
         self.start_time = time.time()
+        completed = True
         
-        for batch_idx in range(total_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, len(codes_to_sync))
-            batch_codes = codes_to_sync[start_idx:end_idx]
+        for batch_idx, batch_codes in self._iter_batches(
+            codes_to_sync,
+            batch_size=batch_size,
+            checkpoint_key="sync_snapshot_data",
+        ):
             
             try:
                 # 获取快照数据
@@ -506,14 +416,19 @@ class StarlightSyncManager:
                 
                 # 显示进度
                 self._print_progress(batch_idx + 1, total_batches, len(codes_to_sync))
+                self._set_checkpoint("sync_snapshot_data", batch_idx + 1)
                 
             except Exception as e:
                 logger.error(f"✗ 批次 {batch_idx + 1} 同步失败: {e}")
+                completed = False
+                break
             
             # 避免请求过快
             time.sleep(2)
         
         logger.info(f"\n✓ 快照数据同步完成，共 {self.total_records} 条记录")
+        if completed:
+            self._clear_checkpoint("sync_snapshot_data")
     
     def sync_financial_data(self, force: bool = False):
         """同步财务数据（智能增量）"""
@@ -550,6 +465,7 @@ class StarlightSyncManager:
                     all_codes,
                     batch_size=1,
                     sleep_seconds=0.02,
+                    checkpoint_key=f"sync_financial.{data_type}",
                     is_local=(not is_first_sync),
                 )
                 
@@ -622,6 +538,7 @@ class StarlightSyncManager:
                     all_codes,
                     batch_size=1,
                     sleep_seconds=0.02,
+                    checkpoint_key=f"sync_holder.{data_type}",
                     is_local=(not is_first_sync),
                 )
                 
@@ -679,6 +596,7 @@ class StarlightSyncManager:
                 all_codes,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="sync_other.margin_detail",
                 is_local=(not is_first_sync),
             )
             if isinstance(margin_detail, dict):
@@ -708,6 +626,7 @@ class StarlightSyncManager:
                 all_codes,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="sync_other.dragon_tiger",
                 is_local=(not is_first_sync),
             )
             if not dragon_tiger.empty:
@@ -730,6 +649,7 @@ class StarlightSyncManager:
                 all_codes,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="sync_other.block_trade",
                 is_local=(not is_first_sync),
             )
             if not block_trade.empty:
@@ -752,6 +672,7 @@ class StarlightSyncManager:
                 all_codes,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="sync_other.equity_pledge_freeze",
                 is_local=(not is_first_sync),
             )
             if isinstance(equity_pledge, dict):
@@ -780,6 +701,7 @@ class StarlightSyncManager:
                 all_codes,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="sync_other.equity_restricted",
                 is_local=(not is_first_sync),
             )
             if isinstance(equity_restricted, dict):
@@ -808,6 +730,7 @@ class StarlightSyncManager:
                 all_codes,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="sync_other.dividend",
                 is_local=(not is_first_sync),
             )
             if not dividend.empty:
@@ -829,6 +752,7 @@ class StarlightSyncManager:
                 all_codes,
                 batch_size=1,
                 sleep_seconds=0.02,
+                checkpoint_key="sync_other.right_issue",
                 is_local=(not is_first_sync),
             )
             if not right_issue.empty:

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 import clickhouse_connect
 import pandas as pd
+from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_float_dtype, is_integer_dtype
 from src.common.config import config
 from src.common.logger import logger
 from src.common.models import DataSource
@@ -136,6 +137,8 @@ class ClickHouseManager:
         if df.empty:
             logger.warning(f"DataFrame 为空，跳过插入 {table_name}")
             return
+
+        df = self._normalize_dataframe_for_clickhouse(df)
         
         if not self.table_exists(table_name):
             # 自动创建表
@@ -161,19 +164,18 @@ class ClickHouseManager:
     
     def _create_table_from_df(self, df: pd.DataFrame, table_name: str):
         """从 DataFrame 自动创建表"""
-        type_mapping = {
-            'int64': 'Int64',
-            'int32': 'Int32',
-            'float64': 'Float64',
-            'float32': 'Float32',
-            'object': 'String',
-            'bool': 'UInt8',
-            'datetime64[ns]': 'DateTime'
-        }
-        
         columns = []
         for col, dtype in df.dtypes.items():
-            ch_type = type_mapping.get(str(dtype), 'String')
+            if is_datetime64_any_dtype(dtype):
+                ch_type = 'DateTime'
+            elif is_integer_dtype(dtype):
+                ch_type = 'Int64'
+            elif is_float_dtype(dtype):
+                ch_type = 'Float64'
+            elif is_bool_dtype(dtype):
+                ch_type = 'UInt8'
+            else:
+                ch_type = 'String'
             columns.append(f"`{col}` {ch_type}")
         
         columns_str = ", ".join(columns)
@@ -189,6 +191,20 @@ class ClickHouseManager:
         """
         
         self.client.command(create_sql)
+
+    def _normalize_dataframe_for_clickhouse(self, df: pd.DataFrame) -> pd.DataFrame:
+        """将 pandas DataFrame 归一化到 ClickHouse 更稳定的类型。"""
+        normalized = df.copy()
+
+        for col in normalized.columns:
+            series = normalized[col]
+            if is_datetime64_any_dtype(series.dtype):
+                parsed = pd.to_datetime(series, errors="coerce")
+                if getattr(parsed.dt, "tz", None) is not None:
+                    parsed = parsed.dt.tz_localize(None)
+                normalized[col] = parsed.astype("datetime64[ns]")
+
+        return normalized
     
     def _get_existing_keys(self, table_name: str, key_columns: List[str]) -> set:
         """获取表中已存在的键"""
