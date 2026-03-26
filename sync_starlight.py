@@ -904,102 +904,107 @@ class StarlightSyncManager(StarlightSyncSupport):
         
         # 6.1 指数成分股
         logger.info("\n6.1 同步指数成分股...")
-        try:
-            total_rows = 0
-            completed = True
-            for batch_index, _, index_constituent in self._iter_code_batch_results(
-                self.client.get_index_constituent,
-                index_codes,
-                batch_size=100,
-                sleep_seconds=0.05,
-                checkpoint_key="sync_index.index_constituent",
-                is_local=(not is_first_sync),
-            ):
-                if isinstance(index_constituent, dict):
-                    batch_rows = 0
-                    for code, df in index_constituent.items():
-                        if df is None or df.empty:
-                            continue
-                        df = self._lowercase_columns(df)
-                        if "index_code" not in df.columns:
-                            df["index_code"] = code
-                        self.db.incremental_update(
-                            "index_constituent",
-                            df,
-                            key_columns=[col for col in ["index_code", "con_code", "indate"] if col in df.columns]
-                        )
-                        batch_rows += len(df)
-                    total_rows += batch_rows
-                    logger.info(f"指数成分股第 {batch_index + 1} 批完成: {batch_rows} 条")
-                self._set_checkpoint("sync_index.index_constituent", batch_index + 1)
-            if total_rows == 0:
-                logger.warning("指数成分股本轮返回 0 条数据，请检查 is_local、缓存或指数代码范围")
-            logger.info(f"✓ 指数成分股已更新: {total_rows} 条")
-            self._mark_table_success("index_constituent")
-            self._clear_checkpoint("sync_index.index_constituent")
-        except Exception as e:
-            self._clear_checkpoint("sync_index.index_constituent")
-            self._mark_table_failed("index_constituent", e)
-            logger.error(f"✗ 同步指数成分股失败: {e}")
+        if self._should_skip_table_sync("index_constituent"):
+            logger.info("指数成分股今日已同步，跳过")
+        else:
+            try:
+                total_rows = 0
+                for batch_index, _, index_constituent in self._iter_code_batch_results(
+                    self.client.get_index_constituent,
+                    index_codes,
+                    batch_size=100,
+                    sleep_seconds=0.05,
+                    checkpoint_key="sync_index.index_constituent",
+                    is_local=(not is_first_sync),
+                ):
+                    if isinstance(index_constituent, dict):
+                        batch_rows = 0
+                        for code, df in index_constituent.items():
+                            if df is None or df.empty:
+                                continue
+                            df = self._lowercase_columns(df)
+                            if "index_code" not in df.columns:
+                                df["index_code"] = code
+                            self.db.incremental_update(
+                                "index_constituent",
+                                df,
+                                key_columns=[col for col in ["index_code", "con_code", "indate"] if col in df.columns]
+                            )
+                            batch_rows += len(df)
+                        total_rows += batch_rows
+                        logger.info(f"指数成分股第 {batch_index + 1} 批完成: {batch_rows} 条")
+                    self._set_checkpoint("sync_index.index_constituent", batch_index + 1)
+                if total_rows == 0:
+                    logger.warning("指数成分股本轮返回 0 条数据，请检查 is_local、缓存或指数代码范围")
+                logger.info(f"✓ 指数成分股已更新: {total_rows} 条")
+                self._mark_table_success("index_constituent")
+                self._clear_checkpoint("sync_index.index_constituent")
+            except Exception as e:
+                self._clear_checkpoint("sync_index.index_constituent")
+                self._mark_table_failed("index_constituent", e)
+                logger.error(f"✗ 同步指数成分股失败: {e}")
         
         # 6.2 指数权重
         logger.info("\n6.2 同步指数权重...")
-        try:
-            supported_weight_codes = [
-                "000016.SH",
-                "000300.SH",
-                "000905.SH",
-                "000906.SH",
-                "000852.SH",
-            ]
-            weight_codes = [code for code in supported_weight_codes if code in index_codes]
-            if not weight_codes:
-                logger.warning("未获取到文档支持的指数权重代码，跳过指数权重同步")
-                return
-            date_range = self._build_incremental_date_range(
-                "index_weight",
-                ["trade_date"],
-                first_sync_days=365,
-                fallback_days=30,
-            )
-            total_rows = 0
-            for batch_index, _, index_weight in self._iter_code_batch_results(
-                self.client.get_index_weight,
-                weight_codes,
-                batch_size=100,
-                sleep_seconds=0.05,
-                checkpoint_key="sync_index.index_weight",
-                is_local=(not is_first_sync),
-                begin_date=date_range["begin_date"],
-                end_date=date_range["end_date"],
-            ):
-                if isinstance(index_weight, dict):
-                    batch_rows = 0
-                    for code, df in index_weight.items():
-                        if df is None or df.empty:
-                            continue
-                        df = self._lowercase_columns(df)
-                        if "index_code" not in df.columns:
-                            df["index_code"] = code
-                        self.db.incremental_update(
-                            "index_weight",
-                            df,
-                            key_columns=[col for col in ["index_code", "con_code", "trade_date"] if col in df.columns],
-                            date_column="trade_date"
-                        )
-                        batch_rows += len(df)
-                    total_rows += batch_rows
-                    logger.info(f"指数权重第 {batch_index + 1} 批完成: {batch_rows} 条")
-                self._set_checkpoint("sync_index.index_weight", batch_index + 1)
-            if total_rows == 0:
-                logger.warning("指数权重本轮返回 0 条数据，请检查日期范围或本地缓存状态")
-            logger.info(f"✓ 指数权重已更新: {total_rows} 条")
-            self._mark_table_success("index_weight", date_column="trade_date")
-            self._clear_checkpoint("sync_index.index_weight")
-        except Exception as e:
-            self._clear_checkpoint("sync_index.index_weight")
-            self._mark_table_failed("index_weight", e, date_column="trade_date")
-            logger.error(f"✗ 同步指数权重失败: {e}")
+        if self._should_skip_table_sync("index_weight"):
+            logger.info("指数权重今日已同步，跳过")
+        else:
+            try:
+                supported_weight_codes = [
+                    "000016.SH",
+                    "000300.SH",
+                    "000905.SH",
+                    "000906.SH",
+                    "000852.SH",
+                ]
+                weight_codes = [code for code in supported_weight_codes if code in index_codes]
+                if not weight_codes:
+                    logger.warning("未获取到文档支持的指数权重代码，跳过指数权重同步")
+                    return
+                date_range = self._build_incremental_date_range(
+                    "index_weight",
+                    ["trade_date"],
+                    first_sync_days=365,
+                    fallback_days=30,
+                )
+                total_rows = 0
+                for batch_index, _, index_weight in self._iter_code_batch_results(
+                    self.client.get_index_weight,
+                    weight_codes,
+                    batch_size=100,
+                    sleep_seconds=0.05,
+                    checkpoint_key="sync_index.index_weight",
+                    is_local=(not is_first_sync),
+                    begin_date=date_range["begin_date"],
+                    end_date=date_range["end_date"],
+                ):
+                    if isinstance(index_weight, dict):
+                        batch_rows = 0
+                        for code, df in index_weight.items():
+                            if df is None or df.empty:
+                                continue
+                            df = self._lowercase_columns(df)
+                            if "index_code" not in df.columns:
+                                df["index_code"] = code
+                            self.db.incremental_update(
+                                "index_weight",
+                                df,
+                                key_columns=[col for col in ["index_code", "con_code", "trade_date"] if col in df.columns],
+                                date_column="trade_date"
+                            )
+                            batch_rows += len(df)
+                        total_rows += batch_rows
+                        logger.info(f"指数权重第 {batch_index + 1} 批完成: {batch_rows} 条")
+                    self._set_checkpoint("sync_index.index_weight", batch_index + 1)
+                if total_rows == 0:
+                    logger.warning("指数权重本轮返回 0 条数据，请检查日期范围或本地缓存状态")
+                logger.info(f"✓ 指数权重已更新: {total_rows} 条")
+                self._mark_table_success("index_weight", date_column="trade_date")
+                self._clear_checkpoint("sync_index.index_weight")
+            except Exception as e:
+                self._clear_checkpoint("sync_index.index_weight")
+                self._mark_table_failed("index_weight", e, date_column="trade_date")
+                logger.error(f"✗ 同步指数权重失败: {e}")
     
     def sync_industry_data(self):
         """同步行业数据"""
