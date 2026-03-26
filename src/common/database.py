@@ -566,29 +566,6 @@ class ClickHouseManager:
     def get_table_sync_status(self, table_name: Optional[str] = None) -> Union[List[Dict], Dict]:
         """获取表级同步状态。"""
         if table_name:
-            # 优先取今天最近一次 success/noop，避免被稍后的失败或重复 noop 覆盖判断。
-            result = self.client.query(f"""
-                SELECT * FROM table_sync_status
-                WHERE table_name = '{table_name}'
-                  AND toDate(updated_at) = today()
-                  AND status IN ('success', 'noop')
-                ORDER BY
-                  if(status = 'success', 1, 0) DESC,
-                  updated_at DESC
-                LIMIT 1
-            """)
-            if result.result_rows:
-                row = result.result_rows[0]
-                return {
-                    "table_name": row[0],
-                    "last_sync_time": row[1],
-                    "last_success_time": row[2],
-                    "record_count": row[3],
-                    "latest_date": row[4],
-                    "status": row[5],
-                    "error_message": row[6],
-                }
-
             result = self.client.query(f"""
                 SELECT * FROM table_sync_status
                 WHERE table_name = '{table_name}'
@@ -613,6 +590,20 @@ class ClickHouseManager:
             ORDER BY updated_at DESC
         """)
         return df.to_dict(orient='records')
+
+    def has_table_sync_success_today(self, table_name: str) -> bool:
+        """判断某张表今天是否已有成功或 noop 同步记录。"""
+        result = self.client.query(f"""
+            SELECT count()
+            FROM table_sync_status
+            WHERE table_name = '{table_name}'
+              AND status IN ('success', 'noop')
+              AND (
+                toDate(last_success_time) = today()
+                OR toDate(last_sync_time) = today()
+              )
+        """)
+        return bool(result.result_rows and result.result_rows[0][0] > 0)
     
     def backup(self, backup_path: Optional[str] = None):
         """备份数据库（导出为 CSV）"""
