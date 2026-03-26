@@ -81,6 +81,7 @@ class StarlightSyncManager(StarlightSyncSupport):
                 df["update_time"] = datetime.now()
                 self.db.execute("DROP TABLE IF EXISTS stock_codes")
                 self.db.insert_dataframe(df, "stock_codes")
+                self.db.update_table_sync_status("stock_codes", success=True, status="success")
                 logger.info(f"✓ 股票代码表已更新: {len(df)} 条")
             except Exception as e:
                 logger.error(f"✗ 同步股票代码表失败: {e}")
@@ -138,6 +139,7 @@ class StarlightSyncManager(StarlightSyncSupport):
                         total_rows += len(stock_basic)
                     self._set_checkpoint("sync_basic.stock_basic", batch_index + 1)
                 if total_rows:
+                    self.db.update_table_sync_status("stock_basic", success=True, status="success")
                     logger.info(f"✓ 证券基础信息已更新: {total_rows} 条")
                 self._clear_checkpoint("sync_basic.stock_basic")
             except Exception as e:

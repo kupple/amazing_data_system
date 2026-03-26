@@ -132,6 +132,7 @@ class StarlightScheduler(StarlightSyncSupport):
             # 全量替换
             self.db.execute(f"DROP TABLE IF EXISTS stock_codes")
             self.db.insert_dataframe(df, "stock_codes")
+            self.db.update_table_sync_status("stock_codes", success=True, status="success")
             
             logger.info(f"股票代码表已更新，共 {len(df)} 条")
             results.append({"type": "stock_codes", "success": True, "count": len(df)})
@@ -177,6 +178,7 @@ class StarlightScheduler(StarlightSyncSupport):
                     total_rows += len(stock_basic)
                 self._set_checkpoint("scheduler.basic.stock_basic", batch_index + 1)
             if total_rows:
+                self.db.update_table_sync_status("stock_basic", success=True, status="success")
                 logger.info(f"证券基础信息已更新，共 {total_rows} 条")
                 results.append({"type": "stock_basic", "success": True, "count": total_rows})
             self._clear_checkpoint("scheduler.basic.stock_basic")
