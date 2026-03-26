@@ -50,6 +50,29 @@ class StarlightSyncManager(StarlightSyncSupport):
         codes = self._call_client_method(self.client.get_code_list, security_type="EXTRA_STOCK_A")
         logger.info(f"✓ 从 API 获取到 {len(codes)} 只股票")
         return codes
+
+    def get_index_codes(self) -> List[str]:
+        """获取指数代码列表，优先从数据库读取。"""
+        logger.info("获取指数代码列表...")
+
+        if self.db.table_exists("index_codes"):
+            try:
+                result = self.db.client.query("SELECT code FROM index_codes")
+                codes = [row[0] for row in result.result_rows]
+                if codes:
+                    logger.info(f"✓ 从数据库获取到 {len(codes)} 个指数")
+                    return codes
+            except Exception as e:
+                logger.warning(f"查询指数代码失败: {e}")
+
+        codes = self._call_client_method(self.client.get_code_list, security_type="EXTRA_INDEX_A")
+        df = pd.DataFrame({"code": codes})
+        df["update_time"] = datetime.now()
+        self.db.execute("DROP TABLE IF EXISTS index_codes")
+        self.db.insert_dataframe(df, "index_codes")
+        self._mark_table_success("index_codes")
+        logger.info(f"✓ 从 API 获取并写入数据库 {len(codes)} 个指数")
+        return codes
     
     def get_synced_codes(self, table_name: str) -> Set[str]:
         """获取已同步的股票代码"""
@@ -871,10 +894,8 @@ class StarlightSyncManager(StarlightSyncSupport):
         logger.info("=" * 60)
         
         # 获取指数代码列表
-        logger.info("获取指数代码列表...")
         try:
-            index_codes = self._call_client_method(self.client.get_code_list, security_type="EXTRA_INDEX_A")
-            logger.info(f"✓ 获取到 {len(index_codes)} 个指数")
+            index_codes = self.get_index_codes()
         except Exception as e:
             logger.error(f"✗ 获取指数代码失败: {e}")
             return
@@ -1322,7 +1343,7 @@ class StarlightSyncManager(StarlightSyncSupport):
         
         # 按类型分组显示
         categories = {
-            "基础数据": ["stock_codes", "trading_calendar", "stock_basic", "backward_factor", "adj_factor"],
+            "基础数据": ["stock_codes", "index_codes", "trading_calendar", "stock_basic", "backward_factor", "adj_factor"],
             "K线数据": ["kline_daily"],
             "快照数据": ["snapshot"],
             "财务数据": ["balance_sheet", "cash_flow", "income", "profit_express", "profit_notice"],
