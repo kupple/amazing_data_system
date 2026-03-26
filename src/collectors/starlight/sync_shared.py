@@ -61,6 +61,23 @@ class StarlightSyncSupport:
         except Exception as log_exc:
             logger.warning(f"写入同步错误日志失败: {log_exc}")
 
+    def _mark_table_success(self, table_name: str, date_column: Optional[str] = None):
+        self.db.update_table_sync_status(
+            table_name=table_name,
+            success=True,
+            date_column=date_column,
+            status="success",
+        )
+
+    def _mark_table_failed(self, table_name: str, error: Exception, date_column: Optional[str] = None):
+        self.db.update_table_sync_status(
+            table_name=table_name,
+            success=False,
+            date_column=date_column,
+            status="failed",
+            error_message=str(error),
+        )
+
     def _get_latest_date_with_fallback(self, table_name: str, candidates: List[str]) -> Optional[str]:
         for column in candidates:
             try:

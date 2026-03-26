@@ -81,9 +81,10 @@ class StarlightSyncManager(StarlightSyncSupport):
                 df["update_time"] = datetime.now()
                 self.db.execute("DROP TABLE IF EXISTS stock_codes")
                 self.db.insert_dataframe(df, "stock_codes")
-                self.db.update_table_sync_status("stock_codes", success=True, status="success")
+                self._mark_table_success("stock_codes")
                 logger.info(f"✓ 股票代码表已更新: {len(df)} 条")
             except Exception as e:
+                self._mark_table_failed("stock_codes", e)
                 logger.error(f"✗ 同步股票代码表失败: {e}")
         
         # 1.2 交易日历
@@ -111,10 +112,13 @@ class StarlightSyncManager(StarlightSyncSupport):
                         key_columns=["trade_date"],
                         date_column="trade_date"
                     )
+                    self._mark_table_success("trading_calendar", date_column="trade_date")
                     logger.info(f"✓ 交易日历已更新: {len(df)} 条")
                 else:
                     logger.warning("交易日历为空，跳过")
+                    self._mark_table_success("trading_calendar", date_column="trade_date")
             except Exception as e:
+                self._mark_table_failed("trading_calendar", e, date_column="trade_date")
                 logger.error(f"✗ 同步交易日历失败: {e}")
                 import traceback
                 traceback.print_exc()
@@ -139,10 +143,11 @@ class StarlightSyncManager(StarlightSyncSupport):
                         total_rows += len(stock_basic)
                     self._set_checkpoint("sync_basic.stock_basic", batch_index + 1)
                 if total_rows:
-                    self.db.update_table_sync_status("stock_basic", success=True, status="success")
                     logger.info(f"✓ 证券基础信息已更新: {total_rows} 条")
+                self._mark_table_success("stock_basic")
                 self._clear_checkpoint("sync_basic.stock_basic")
             except Exception as e:
+                self._mark_table_failed("stock_basic", e)
                 logger.error(f"✗ 同步证券基础信息失败: {e}")
         
         # 1.4 复权因子
@@ -180,6 +185,7 @@ class StarlightSyncManager(StarlightSyncSupport):
                         date_column="date"
                     )
                     logger.info(f"  ✓ 后复权因子已更新: {len(merged_df)} 条")
+                self._mark_table_success("backward_factor", date_column="date")
                 self._clear_checkpoint("sync_basic.backward_factor")
             
             # 前复权因子 - 当前 SDK 返回 index=日期、columns=代码 的 DataFrame
@@ -210,9 +216,11 @@ class StarlightSyncManager(StarlightSyncSupport):
                         date_column="date"
                     )
                     logger.info(f"  ✓ 前复权因子已更新: {len(merged_df)} 条")
+                self._mark_table_success("adj_factor", date_column="date")
                 self._clear_checkpoint("sync_basic.adj_factor")
                 
         except Exception as e:
+            self._mark_table_failed("backward_factor", e, date_column="date")
             logger.error(f"✗ 同步复权因子失败: {e}")
             import traceback
             traceback.print_exc()
@@ -338,7 +346,10 @@ class StarlightSyncManager(StarlightSyncSupport):
         
         logger.info(f"\n✓ K线数据同步完成，共 {self.total_records} 条记录")
         if completed:
+            self._mark_table_success("kline_daily", date_column="trade_time")
             self._clear_checkpoint("sync_kline_data")
+        else:
+            self._mark_table_failed("kline_daily", Exception("K线同步未完成"), date_column="trade_time")
     
     def sync_snapshot_data(self, force: bool = False):
         """同步快照数据（智能增量）"""
@@ -446,7 +457,10 @@ class StarlightSyncManager(StarlightSyncSupport):
         
         logger.info(f"\n✓ 快照数据同步完成，共 {self.total_records} 条记录")
         if completed:
+            self._mark_table_success("snapshot", date_column="time")
             self._clear_checkpoint("sync_snapshot_data")
+        else:
+            self._mark_table_failed("snapshot", Exception("快照同步未完成"), date_column="time")
     
     def sync_financial_data(self, force: bool = False):
         """同步财务数据（智能增量）"""
@@ -515,9 +529,11 @@ class StarlightSyncManager(StarlightSyncSupport):
                     self._set_checkpoint(f"sync_financial.{data_type}", batch_index + 1)
                 if total_rows:
                     logger.info(f"✓ {name}已更新: {total_rows} 条")
+                self._mark_table_success(data_type, date_column="reporting_period")
                 self._clear_checkpoint(f"sync_financial.{data_type}")
                 
             except Exception as e:
+                self._mark_table_failed(data_type, e, date_column="reporting_period")
                 logger.error(f"✗ 同步{name}失败: {e}")
     
     def sync_holder_data(self):
@@ -567,9 +583,11 @@ class StarlightSyncManager(StarlightSyncSupport):
                     self._set_checkpoint(f"sync_holder.{data_type}", batch_index + 1)
                 if total_rows:
                     logger.info(f"✓ {name}已更新: {total_rows} 条")
+                self._mark_table_success(data_type)
                 self._clear_checkpoint(f"sync_holder.{data_type}")
                 
             except Exception as e:
+                self._mark_table_failed(data_type, e)
                 logger.error(f"✗ 同步{name}失败: {e}")
     
     def sync_other_data(self):
@@ -601,7 +619,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                     date_column="trade_date"
                 )
                 logger.info(f"✓ 融资融券汇总已更新: {len(margin_summary)} 条")
+            self._mark_table_success("margin_summary", date_column="trade_date")
         except Exception as e:
+            self._mark_table_failed("margin_summary", e, date_column="trade_date")
             logger.error(f"✗ 同步融资融券汇总失败: {e}")
         
         # 5.2 融资融券明细
@@ -635,8 +655,10 @@ class StarlightSyncManager(StarlightSyncSupport):
                 self._set_checkpoint("sync_other.margin_detail", batch_index + 1)
             if total_rows:
                 logger.info(f"✓ 融资融券明细已更新: {total_rows} 条")
+            self._mark_table_success("margin_detail", date_column="trade_date")
             self._clear_checkpoint("sync_other.margin_detail")
         except Exception as e:
+            self._mark_table_failed("margin_detail", e, date_column="trade_date")
             logger.error(f"✗ 同步融资融券明细失败: {e}")
         
         # 5.3 龙虎榜
@@ -663,8 +685,10 @@ class StarlightSyncManager(StarlightSyncSupport):
                 self._set_checkpoint("sync_other.dragon_tiger", batch_index + 1)
             if total_rows:
                 logger.info(f"✓ 龙虎榜已更新: {total_rows} 条")
+            self._mark_table_success("dragon_tiger", date_column="trade_date")
             self._clear_checkpoint("sync_other.dragon_tiger")
         except Exception as e:
+            self._mark_table_failed("dragon_tiger", e, date_column="trade_date")
             logger.error(f"✗ 同步龙虎榜失败: {e}")
         
         # 5.4 大宗交易
@@ -691,8 +715,10 @@ class StarlightSyncManager(StarlightSyncSupport):
                 self._set_checkpoint("sync_other.block_trade", batch_index + 1)
             if total_rows:
                 logger.info(f"✓ 大宗交易已更新: {total_rows} 条")
+            self._mark_table_success("block_trade", date_column="trade_date")
             self._clear_checkpoint("sync_other.block_trade")
         except Exception as e:
+            self._mark_table_failed("block_trade", e, date_column="trade_date")
             logger.error(f"✗ 同步大宗交易失败: {e}")
         
         # 5.5 股权质押冻结
@@ -725,8 +751,10 @@ class StarlightSyncManager(StarlightSyncSupport):
                 self._set_checkpoint("sync_other.equity_pledge_freeze", batch_index + 1)
             if total_rows:
                 logger.info(f"✓ 股权质押冻结已更新: {total_rows} 条")
+            self._mark_table_success("equity_pledge_freeze")
             self._clear_checkpoint("sync_other.equity_pledge_freeze")
         except Exception as e:
+            self._mark_table_failed("equity_pledge_freeze", e)
             logger.error(f"✗ 同步股权质押冻结失败: {e}")
         
         # 5.6 限售股解禁
@@ -759,8 +787,10 @@ class StarlightSyncManager(StarlightSyncSupport):
                 self._set_checkpoint("sync_other.equity_restricted", batch_index + 1)
             if total_rows:
                 logger.info(f"✓ 限售股解禁已更新: {total_rows} 条")
+            self._mark_table_success("equity_restricted")
             self._clear_checkpoint("sync_other.equity_restricted")
         except Exception as e:
+            self._mark_table_failed("equity_restricted", e)
             logger.error(f"✗ 同步限售股解禁失败: {e}")
         
         # 5.7 分红送股
@@ -786,8 +816,10 @@ class StarlightSyncManager(StarlightSyncSupport):
                 self._set_checkpoint("sync_other.dividend", batch_index + 1)
             if total_rows:
                 logger.info(f"✓ 分红送股已更新: {total_rows} 条")
+            self._mark_table_success("dividend")
             self._clear_checkpoint("sync_other.dividend")
         except Exception as e:
+            self._mark_table_failed("dividend", e)
             logger.error(f"✗ 同步分红送股失败: {e}")
         
         # 5.8 配股
@@ -813,8 +845,10 @@ class StarlightSyncManager(StarlightSyncSupport):
                 self._set_checkpoint("sync_other.right_issue", batch_index + 1)
             if total_rows:
                 logger.info(f"✓ 配股已更新: {total_rows} 条")
+            self._mark_table_success("right_issue")
             self._clear_checkpoint("sync_other.right_issue")
         except Exception as e:
+            self._mark_table_failed("right_issue", e)
             logger.error(f"✗ 同步配股失败: {e}")
     
     def _print_progress(self, current: int, total: int, total_codes: int):
@@ -871,7 +905,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         key_columns=[col for col in ["index_code", "con_code", "indate"] if col in merged_df.columns]
                     )
                     logger.info(f"✓ 指数成分股已更新: {len(merged_df)} 条")
+            self._mark_table_success("index_constituent")
         except Exception as e:
+            self._mark_table_failed("index_constituent", e)
             logger.error(f"✗ 同步指数成分股失败: {e}")
         
         # 6.2 指数权重
@@ -918,7 +954,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         date_column="trade_date"
                     )
                     logger.info(f"✓ 指数权重已更新: {len(merged_df)} 条")
+            self._mark_table_success("index_weight", date_column="trade_date")
         except Exception as e:
+            self._mark_table_failed("index_weight", e, date_column="trade_date")
             logger.error(f"✗ 同步指数权重失败: {e}")
     
     def sync_industry_data(self):
@@ -943,7 +981,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                 industry_codes = industry_info['index_code'].tolist() if 'index_code' in industry_info.columns else []
             else:
                 industry_codes = []
+            self._mark_table_success("industry_base_info")
         except Exception as e:
+            self._mark_table_failed("industry_base_info", e)
             logger.error(f"✗ 同步行业基本信息失败: {e}")
             industry_codes = []
         
@@ -975,7 +1015,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         key_columns=[col for col in ["index_code", "con_code", "indate"] if col in merged_df.columns]
                     )
                     logger.info(f"✓ 行业成分股已更新: {len(merged_df)} 条")
+            self._mark_table_success("industry_constituent")
         except Exception as e:
+            self._mark_table_failed("industry_constituent", e)
             logger.error(f"✗ 同步行业成分股失败: {e}")
         
         # 7.3 行业权重
@@ -1011,7 +1053,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         date_column="trade_date"
                     )
                     logger.info(f"✓ 行业权重已更新: {len(merged_df)} 条")
+            self._mark_table_success("industry_weight", date_column="trade_date")
         except Exception as e:
+            self._mark_table_failed("industry_weight", e, date_column="trade_date")
             logger.error(f"✗ 同步行业权重失败: {e}")
         
         # 7.4 行业日线
@@ -1047,7 +1091,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         date_column="trade_date"
                     )
                     logger.info(f"✓ 行业日线已更新: {len(merged_df)} 条")
+            self._mark_table_success("industry_daily", date_column="trade_date")
         except Exception as e:
+            self._mark_table_failed("industry_daily", e, date_column="trade_date")
             logger.error(f"✗ 同步行业日线失败: {e}")
     
     def sync_convertible_bond_data(self):
@@ -1092,7 +1138,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         key_columns=key_columns
                     )
                     logger.info(f"✓ {name}已更新: {len(data)} 条")
+                self._mark_table_success(data_type)
             except Exception as e:
+                self._mark_table_failed(data_type, e)
                 logger.error(f"✗ 同步{name}失败: {e}")
     
     def sync_etf_data(self):
@@ -1127,7 +1175,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         date_column="trade_date"
                     )
                     logger.info(f"✓ ETF申赎数据已更新: {len(df)} 条")
+            self._mark_table_success("etf_pcf", date_column="trade_date")
         except Exception as e:
+            self._mark_table_failed("etf_pcf", e, date_column="trade_date")
             logger.error(f"✗ 同步ETF申赎数据失败: {e}")
         
         # 9.2 基金份额
@@ -1150,7 +1200,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         date_column="trade_date"
                     )
                     logger.info(f"✓ 基金份额已更新: {len(merged_df)} 条")
+            self._mark_table_success("fund_share", date_column="trade_date")
         except Exception as e:
+            self._mark_table_failed("fund_share", e, date_column="trade_date")
             logger.error(f"✗ 同步基金份额失败: {e}")
         
         # 9.3 基金IOPV
@@ -1172,7 +1224,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         key_columns=["fund_code", "trade_time"]
                     )
                     logger.info(f"✓ 基金IOPV已更新: {len(merged_df)} 条")
+            self._mark_table_success("fund_iopv")
         except Exception as e:
+            self._mark_table_failed("fund_iopv", e)
             logger.error(f"✗ 同步基金IOPV失败: {e}")
     
     def sync_option_data(self):
@@ -1212,7 +1266,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         key_columns=key_columns
                     )
                     logger.info(f"✓ {name}已更新: {len(data)} 条")
+                self._mark_table_success(data_type)
             except Exception as e:
+                self._mark_table_failed(data_type, e)
                 logger.error(f"✗ 同步{name}失败: {e}")
     
     def sync_treasury_data(self):
@@ -1245,7 +1301,9 @@ class StarlightSyncManager(StarlightSyncSupport):
                         date_column="trade_date"
                     )
                     logger.info(f"✓ 国债收益率已更新: {len(merged_df)} 条")
+            self._mark_table_success("treasury_yield", date_column="trade_date")
         except Exception as e:
+            self._mark_table_failed("treasury_yield", e, date_column="trade_date")
             logger.error(f"✗ 同步国债收益率失败: {e}")
     
     def get_sync_status(self):

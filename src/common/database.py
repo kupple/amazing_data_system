@@ -486,13 +486,6 @@ class ClickHouseManager:
             date_column: 日期列（用于增量判断）
         """
         if df.empty:
-            if self.table_exists(table_name):
-                self.update_table_sync_status(
-                    table_name=table_name,
-                    success=True,
-                    date_column=date_column,
-                    status="noop",
-                )
             return
         
         # 获取最新日期
@@ -505,12 +498,6 @@ class ClickHouseManager:
                 
                 if df.empty:
                     logger.info(f"{table_name} 无新数据需要更新")
-                    self.update_table_sync_status(
-                        table_name=table_name,
-                        success=True,
-                        date_column=date_column,
-                        status="noop",
-                    )
                     return
         
         # 如果表不存在，创建表
@@ -521,12 +508,6 @@ class ClickHouseManager:
         # 使用去重插入
         self.insert_dataframe(df, table_name, if_exists="append", unique_keys=key_columns)
         logger.info(f"增量更新完成，插入 {len(df)} 条新记录到 {table_name}")
-        self.update_table_sync_status(
-            table_name=table_name,
-            success=True,
-            date_column=date_column,
-            status="success",
-        )
 
     def update_table_sync_status(
         self,
@@ -592,12 +573,12 @@ class ClickHouseManager:
         return df.to_dict(orient='records')
 
     def has_table_sync_success_today(self, table_name: str) -> bool:
-        """判断某张表今天是否已有成功或 noop 同步记录。"""
+        """判断某张表今天是否已有成功同步记录。"""
         result = self.client.query(f"""
             SELECT count()
             FROM table_sync_status
             WHERE table_name = '{table_name}'
-              AND status IN ('success', 'noop')
+              AND status = 'success'
               AND (
                 toDate(last_success_time) = today()
                 OR toDate(last_sync_time) = today()

@@ -132,11 +132,12 @@ class StarlightScheduler(StarlightSyncSupport):
             # 全量替换
             self.db.execute(f"DROP TABLE IF EXISTS stock_codes")
             self.db.insert_dataframe(df, "stock_codes")
-            self.db.update_table_sync_status("stock_codes", success=True, status="success")
+            self._mark_table_success("stock_codes")
             
             logger.info(f"股票代码表已更新，共 {len(df)} 条")
             results.append({"type": "stock_codes", "success": True, "count": len(df)})
         except Exception as e:
+            self._mark_table_failed("stock_codes", e)
             logger.error(f"同步股票代码表失败: {e}")
             results.append({"type": "stock_codes", "success": False, "error": str(e)})
         
@@ -153,10 +154,12 @@ class StarlightScheduler(StarlightSyncSupport):
                 key_columns=["trade_date"],
                 date_column="trade_date"
             )
+            self._mark_table_success("trading_calendar", date_column="trade_date")
             
             logger.info(f"交易日历已更新")
             results.append({"type": "trading_calendar", "success": True})
         except Exception as e:
+            self._mark_table_failed("trading_calendar", e, date_column="trade_date")
             logger.error(f"同步交易日历失败: {e}")
             results.append({"type": "trading_calendar", "success": False, "error": str(e)})
         
@@ -178,11 +181,12 @@ class StarlightScheduler(StarlightSyncSupport):
                     total_rows += len(stock_basic)
                 self._set_checkpoint("scheduler.basic.stock_basic", batch_index + 1)
             if total_rows:
-                self.db.update_table_sync_status("stock_basic", success=True, status="success")
                 logger.info(f"证券基础信息已更新，共 {total_rows} 条")
                 results.append({"type": "stock_basic", "success": True, "count": total_rows})
+            self._mark_table_success("stock_basic")
             self._clear_checkpoint("scheduler.basic.stock_basic")
         except Exception as e:
+            self._mark_table_failed("stock_basic", e)
             logger.error(f"同步证券基础信息失败: {e}")
             results.append({"type": "stock_basic", "success": False, "error": str(e)})
         
@@ -213,6 +217,7 @@ class StarlightScheduler(StarlightSyncSupport):
                 )
                 logger.info(f"后复权因子已更新，共 {len(backward_factor)} 条")
                 results.append({"type": "backward_factor", "success": True, "count": len(backward_factor)})
+            self._mark_table_success("backward_factor", date_column="date")
             self._clear_checkpoint("scheduler.basic.backward_factor")
             
             # 前复权因子
@@ -238,9 +243,11 @@ class StarlightScheduler(StarlightSyncSupport):
                 )
                 logger.info(f"前复权因子已更新，共 {len(adj_factor)} 条")
                 results.append({"type": "adj_factor", "success": True, "count": len(adj_factor)})
+            self._mark_table_success("adj_factor", date_column="date")
             self._clear_checkpoint("scheduler.basic.adj_factor")
                 
         except Exception as e:
+            self._mark_table_failed("backward_factor", e, date_column="date")
             logger.error(f"同步复权因子失败: {e}")
             results.append({"type": "adj_factor", "success": False, "error": str(e)})
         
@@ -347,7 +354,10 @@ class StarlightScheduler(StarlightSyncSupport):
             time.sleep(1)
         
         if completed:
+            self._mark_table_success("kline_daily", date_column="trade_time")
             self._clear_checkpoint("scheduler.market.kline")
+        else:
+            self._mark_table_failed("kline_daily", Exception("K线同步未完成"), date_column="trade_time")
         return {"task": "sync_market_data", "results": results}
     
     # ========== 财务数据同步 ==========
@@ -427,9 +437,11 @@ class StarlightScheduler(StarlightSyncSupport):
                 if total_rows:
                     logger.info(f"{name}已更新，共 {total_rows} 条")
                     results.append({"type": data_type, "success": True, "count": total_rows})
+                self._mark_table_success(data_type, date_column="reporting_period")
                 self._clear_checkpoint(f"scheduler.financial.{data_type}")
                 
             except Exception as e:
+                self._mark_table_failed(data_type, e, date_column="reporting_period")
                 logger.error(f"同步{name}失败: {e}")
                 results.append({"type": data_type, "success": False, "error": str(e)})
         
@@ -490,9 +502,11 @@ class StarlightScheduler(StarlightSyncSupport):
                 if total_rows:
                     logger.info(f"{name}已更新，共 {total_rows} 条")
                     results.append({"type": data_type, "success": True, "count": total_rows})
+                self._mark_table_success(data_type)
                 self._clear_checkpoint(f"scheduler.holder.{data_type}")
                 
             except Exception as e:
+                self._mark_table_failed(data_type, e)
                 logger.error(f"同步{name}失败: {e}")
                 results.append({"type": data_type, "success": False, "error": str(e)})
         
@@ -537,7 +551,9 @@ class StarlightScheduler(StarlightSyncSupport):
                 )
                 logger.info(f"融资融券汇总已更新，共 {len(margin_summary)} 条")
                 results.append({"type": "margin_summary", "success": True, "count": len(margin_summary)})
+            self._mark_table_success("margin_summary", date_column="trade_date")
         except Exception as e:
+            self._mark_table_failed("margin_summary", e, date_column="trade_date")
             logger.error(f"同步融资融券汇总失败: {e}")
             results.append({"type": "margin_summary", "success": False, "error": str(e)})
         
@@ -565,8 +581,10 @@ class StarlightScheduler(StarlightSyncSupport):
             if total_rows:
                 logger.info(f"龙虎榜已更新，共 {total_rows} 条")
                 results.append({"type": "dragon_tiger", "success": True, "count": total_rows})
+            self._mark_table_success("dragon_tiger", date_column="trade_date")
             self._clear_checkpoint("scheduler.other.dragon_tiger")
         except Exception as e:
+            self._mark_table_failed("dragon_tiger", e, date_column="trade_date")
             logger.error(f"同步龙虎榜失败: {e}")
             results.append({"type": "dragon_tiger", "success": False, "error": str(e)})
         
@@ -594,8 +612,10 @@ class StarlightScheduler(StarlightSyncSupport):
             if total_rows:
                 logger.info(f"大宗交易已更新，共 {total_rows} 条")
                 results.append({"type": "block_trade", "success": True, "count": total_rows})
+            self._mark_table_success("block_trade", date_column="trade_date")
             self._clear_checkpoint("scheduler.other.block_trade")
         except Exception as e:
+            self._mark_table_failed("block_trade", e, date_column="trade_date")
             logger.error(f"同步大宗交易失败: {e}")
             results.append({"type": "block_trade", "success": False, "error": str(e)})
         
