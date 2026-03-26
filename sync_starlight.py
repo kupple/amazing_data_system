@@ -971,7 +971,7 @@ class StarlightSyncManager(StarlightSyncSupport):
                 for batch_index, _, index_weight in self._iter_code_batch_results(
                     self.client.get_index_weight,
                     weight_codes,
-                    batch_size=100,
+                    batch_size=30,
                     sleep_seconds=0.05,
                     checkpoint_key="sync_index.index_weight",
                     is_local=(not is_first_sync),
