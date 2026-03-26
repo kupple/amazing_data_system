@@ -17,6 +17,7 @@ class AmazingDataConfig:
     password: str
     ip: str
     port: int
+    local_path: Optional[str]
     permission_start: str
     permission_end: str
     phone: str
@@ -98,6 +99,7 @@ class AppConfig:
                 password=os.getenv("AD_PASSWORD"),
                 ip=os.getenv("AD_IP"),
                 port=int(os.getenv("AD_PORT", "8600")),
+                local_path=os.getenv("AD_LOCAL_PATH"),
                 permission_start=os.getenv("AD_PERMISSION_START"),
                 permission_end=os.getenv("AD_PERMISSION_END"),
                 phone=os.getenv("AD_PHONE"),

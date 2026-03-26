@@ -4,7 +4,6 @@ AmazingData SDK 客户端模块 - 按官方文档实现
 """
 import os
 import re
-import tempfile
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Union
 import numpy as np
@@ -170,14 +169,14 @@ class AmazingDataClient:
         self.host = host or config.amazing_data.ip
         self.port = port or config.amazing_data.port
         
+        configured_local_path = local_path or config.amazing_data.local_path
         # Windows 路径格式: D://AmazingData_local_data//
-        if local_path is None:
-            cache_dir = os.path.join(os.getcwd(), 'amazing_data_cache')
-            os.makedirs(cache_dir, exist_ok=True)
-            # Windows 使用双斜杠
-            self.local_path = cache_dir.replace('\\', '//') + '//'
+        if configured_local_path:
+            resolved_path = os.path.abspath(os.path.expanduser(configured_local_path))
         else:
-            self.local_path = local_path
+            resolved_path = os.path.join(os.getcwd(), 'amazing_data_cache')
+        os.makedirs(resolved_path, exist_ok=True)
+        self.local_path = resolved_path.replace('\\', '//') + '//'
         
         logger.info(f"本地缓存路径: {self.local_path}")
 
@@ -190,13 +189,6 @@ class AmazingDataClient:
         """为存在兼容问题的缓存构造独立目录。"""
         cache_dir = os.path.join(os.getcwd(), "amazing_data_cache_fresh", cache_name)
         os.makedirs(cache_dir, exist_ok=True)
-        return cache_dir.replace("\\", "//") + "//"
-
-    def _build_temp_cache_path(self, cache_name: str) -> str:
-        """为只走远端的查询构造一次性缓存目录，避免读到旧本地缓存。"""
-        parent = os.path.join(os.getcwd(), "tmp", "amazingdata_runtime_cache")
-        os.makedirs(parent, exist_ok=True)
-        cache_dir = tempfile.mkdtemp(prefix=f"{cache_name}_", dir=parent)
         return cache_dir.replace("\\", "//") + "//"
 
     @staticmethod
@@ -348,11 +340,10 @@ class AmazingDataClient:
         """3.5.2.5 复权因子（后复权因子）"""
         if not self._connected:
             self.connect()
-        temp_path = self._build_temp_cache_path("backward_factor")
-        logger.info(f"后复权因子强制走远端，不读取历史缓存: {temp_path}")
+        logger.info(f"后复权因子使用配置缓存目录并强制走远端: {self.local_path}")
         return self._base.get_backward_factor(
             code_list,
-            local_path=temp_path,
+            local_path=self.local_path,
             is_local=False
         )
 
@@ -361,11 +352,10 @@ class AmazingDataClient:
         """3.5.2.6 复权因子（单次复权因子）"""
         if not self._connected:
             self.connect()
-        temp_path = self._build_temp_cache_path("adj_factor")
-        logger.info(f"前复权因子强制走远端，不读取历史缓存: {temp_path}")
+        logger.info(f"前复权因子使用配置缓存目录并强制走远端: {self.local_path}")
         return self._base.get_adj_factor(
             code_list,
-            local_path=temp_path,
+            local_path=self.local_path,
             is_local=False
         )
 
