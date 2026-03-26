@@ -348,6 +348,28 @@ class ClickHouseManager:
         except Exception as e:
             logger.warning(f"获取最新日期失败: {e}")
             return None
+
+    def get_latest_date_for_value(
+        self,
+        table_name: str,
+        date_column: str,
+        key_column: str,
+        key_value: Any,
+    ) -> Optional[str]:
+        """获取某个分组键下的最新日期。"""
+        try:
+            safe_value = str(key_value).replace("'", "''")
+            result = self.client.query(f"""
+                SELECT MAX(`{date_column}`) as max_date
+                FROM {table_name}
+                WHERE `{key_column}` = '{safe_value}'
+            """)
+            if result.result_rows and result.result_rows[0][0]:
+                return str(result.result_rows[0][0])
+            return None
+        except Exception as e:
+            logger.warning(f"获取分组最新日期失败: {e}")
+            return None
     
     def get_table_count(self, table_name: str) -> int:
         """获取表记录数"""

@@ -113,6 +113,38 @@ class StarlightSyncSupport:
             "end_date": int(end_date.strftime("%Y%m%d")),
         }
 
+    def _build_incremental_date_range_for_value(
+        self,
+        table_name: str,
+        date_column: str,
+        key_column: str,
+        key_value: str,
+        first_sync_days: int = 365,
+        fallback_days: int = 30,
+    ) -> Dict[str, int]:
+        """按单个分组键生成增量日期范围。"""
+        end_date = datetime.now()
+        latest_date = self.db.get_latest_date_for_value(
+            table_name=table_name,
+            date_column=date_column,
+            key_column=key_column,
+            key_value=key_value,
+        )
+        if latest_date:
+            try:
+                start_date = datetime.strptime(str(latest_date)[:10], "%Y-%m-%d") - timedelta(days=1)
+            except (TypeError, ValueError):
+                start_date = end_date - timedelta(days=fallback_days)
+        elif self.db.table_exists(table_name):
+            start_date = end_date - timedelta(days=fallback_days)
+        else:
+            start_date = end_date - timedelta(days=first_sync_days)
+
+        return {
+            "begin_date": int(start_date.strftime("%Y%m%d")),
+            "end_date": int(end_date.strftime("%Y%m%d")),
+        }
+
     def _should_skip_table_sync(
         self,
         table_name: str,
@@ -220,3 +252,72 @@ class StarlightSyncSupport:
 
             if sleep_seconds > 0:
                 time.sleep(sleep_seconds)
+
+    def _sync_grouped_table_by_key(
+        self,
+        method,
+        keys: List[str],
+        table_name: str,
+        key_column: str,
+        key_columns: List[str],
+        request_arg: str = "code_list",
+        date_column: Optional[str] = None,
+        is_local: bool = True,
+        first_sync_days: int = 365,
+        fallback_days: int = 30,
+        sleep_seconds: float = 0.0,
+        extra_kwargs: Optional[Dict] = None,
+    ) -> int:
+        """按单个 key 逐次请求并逐次落库。"""
+        total_rows = 0
+        extra_kwargs = extra_kwargs or {}
+
+        for key in keys:
+            kwargs = dict(extra_kwargs)
+            kwargs[request_arg] = [key]
+            kwargs["is_local"] = is_local
+
+            if date_column:
+                date_range = self._build_incremental_date_range_for_value(
+                    table_name=table_name,
+                    date_column=date_column,
+                    key_column=key_column,
+                    key_value=key,
+                    first_sync_days=first_sync_days,
+                    fallback_days=fallback_days,
+                )
+                kwargs["begin_date"] = date_range["begin_date"]
+                kwargs["end_date"] = date_range["end_date"]
+
+            result = self._call_client_method(method, **kwargs)
+
+            if isinstance(result, dict):
+                for returned_key, df in result.items():
+                    if df is None or df.empty:
+                        continue
+                    df = self._lowercase_columns(df)
+                    if key_column not in df.columns:
+                        df[key_column] = returned_key
+                    self.db.incremental_update(
+                        table_name,
+                        df,
+                        key_columns=key_columns,
+                        date_column=date_column,
+                    )
+                    total_rows += len(df)
+            elif isinstance(result, pd.DataFrame) and not result.empty:
+                result = self._lowercase_columns(result)
+                if key_column and key_column not in result.columns:
+                    result[key_column] = key
+                self.db.incremental_update(
+                    table_name,
+                    result,
+                    key_columns=key_columns,
+                    date_column=date_column,
+                )
+                total_rows += len(result)
+
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
+        return total_rows
