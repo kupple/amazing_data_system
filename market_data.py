@@ -242,7 +242,11 @@ class MarketData:
         print("[debug] sync_kline step=to_ch_date_end", flush=True)
         end = to_ch_date(end_date)
         print("[debug] sync_kline step=resolve_period_token", flush=True)
-        period_token = self._resolve_period_token(period)
+        period_text = str(period).strip()
+        if period_text == PeriodName.DAY:
+            period_token = "10008"
+        else:
+            period_token = self._resolve_period_token(period)
         print("[debug] sync_kline step=validate_date_range", flush=True)
         self._validate_date_range(begin, end)
         print("[debug] sync_kline step=prepared", flush=True)
