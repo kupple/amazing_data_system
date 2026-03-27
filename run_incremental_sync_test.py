@@ -19,6 +19,7 @@ from amazingdata_sdk_provider import AmazingDataSDKConfig, AmazingDataSDKProvide
 from base_data import BaseData
 from clickhouse_client import ClickHouseConfig
 from info_data import InfoData
+from market_data import MarketData
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +35,8 @@ def parse_args() -> argparse.Namespace:
             "history_stock_status",
             "adj_factor",
             "backward_factor",
+            "query_kline",
+            "query_snapshot",
         ],
     )
     parser.add_argument("--env-file", default=".env", help="dotenv 文件路径")
@@ -44,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--begin-date", type=int)
     parser.add_argument("--end-date", type=int)
     parser.add_argument("--data-type", default="str", choices=["str", "datetime"])
+    parser.add_argument("--period", default="day", help="query_kline 的周期，例如 day/min1/min5")
     parser.add_argument("--local-path", default="", help="AmazingData 本地缓存路径")
     parser.add_argument("--insert-batch-size", type=int, default=5000)
     parser.add_argument("--log-level", default="INFO")
@@ -64,6 +68,7 @@ def main() -> int:
 
     base_data = None
     info_data = None
+    market_data = None
     try:
         if args.target in {"calendar", "code_info", "code_list", "hist_code_list", "adj_factor", "backward_factor"}:
             base_data = BaseData.from_clickhouse_config(
@@ -79,8 +84,22 @@ def main() -> int:
                 insert_batch_size=args.insert_batch_size,
             )
 
+        if args.target in {"query_kline", "query_snapshot"}:
+            market_data = MarketData.from_clickhouse_config(
+                clickhouse_config,
+                sync_provider=provider,
+                insert_batch_size=args.insert_batch_size,
+            )
+
         codes = parse_codes(args.codes)
-        if args.target in {"stock_basic", "history_stock_status", "adj_factor", "backward_factor"} and not codes:
+        if args.target in {
+            "stock_basic",
+            "history_stock_status",
+            "adj_factor",
+            "backward_factor",
+            "query_kline",
+            "query_snapshot",
+        } and not codes:
             if base_data is None:
                 base_data = BaseData.from_clickhouse_config(
                     clickhouse_config,
@@ -142,8 +161,36 @@ def main() -> int:
             print_summary(result, head=args.head)
             return 0
 
+        if args.target == "query_kline":
+            if args.begin_date is None or args.end_date is None:
+                raise ValueError("query_kline 测试需要 --begin-date 和 --end-date")
+            result = market_data.query_kline(
+                code_list=codes,
+                begin_date=args.begin_date,
+                end_date=args.end_date,
+                period=args.period,
+            )
+            print_summary(result, head=args.head)
+            return 0
+
+        if args.target == "query_snapshot":
+            if args.begin_date is None or args.end_date is None:
+                raise ValueError("query_snapshot 测试需要 --begin-date 和 --end-date")
+            result = market_data.query_snapshot(
+                code_list=codes,
+                begin_date=args.begin_date,
+                end_date=args.end_date,
+            )
+            print_summary(result, head=args.head)
+            return 0
+
         raise ValueError(f"未知 target: {args.target}")
     finally:
+        if market_data is not None:
+            try:
+                market_data.close()
+            except Exception:
+                pass
         if info_data is not None:
             try:
                 info_data.close()
@@ -165,6 +212,17 @@ def parse_codes(raw: str) -> list[str]:
 
 
 def print_summary(result, head: int) -> None:
+    if isinstance(result, dict):
+        print(f"codes={len(result)}")
+        for idx, (code, value) in enumerate(result.items()):
+            if idx >= head:
+                break
+            if hasattr(value, "shape"):
+                print(f"[{code}] shape={value.shape}")
+                print(value.head(head))
+            else:
+                print(f"[{code}] {value}")
+        return
     if hasattr(result, "head") and hasattr(result, "shape"):
         print(f"shape={result.shape}")
         print(result.head(head))

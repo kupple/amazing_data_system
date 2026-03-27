@@ -119,6 +119,29 @@ class HistoryStockStatusQuery:
 
 
 @dataclass(frozen=True)
+class MarketKlineQuery:
+    """K 线查询参数."""
+
+    code_list: tuple[str, ...]
+    begin_date: date
+    end_date: date
+    period: str
+    begin_time: Optional[int] = None
+    end_time: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class MarketSnapshotQuery:
+    """历史快照查询参数."""
+
+    code_list: tuple[str, ...]
+    begin_date: date
+    end_date: date
+    begin_time: Optional[int] = None
+    end_time: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class TradeCalendarRow:
     """交易日历落库行."""
 
@@ -226,6 +249,96 @@ class HistoryStockStatusRow:
 
 
 @dataclass(frozen=True)
+class MarketKlineRow:
+    """`query_kline` 落库行."""
+
+    trade_time: datetime
+    trade_date: date
+    code: str
+    period: str
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: Optional[float] = None
+    volume: Optional[float] = None
+    amount: Optional[float] = None
+    source: str = DEFAULT_SOURCE
+    synced_at: datetime = field(default_factory=utcnow)
+    created_at: datetime = field(default_factory=utcnow)
+    updated_at: datetime = field(default_factory=utcnow)
+
+
+@dataclass(frozen=True)
+class MarketSnapshotRow:
+    """`query_snapshot` 落库行.
+
+    这里使用已知快照结构的并集列，并通过 `snapshot_kind` 区分具体结构。
+    """
+
+    trade_time: datetime
+    trade_date: date
+    code: str
+    snapshot_kind: str
+    pre_close: Optional[float] = None
+    last: Optional[float] = None
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: Optional[float] = None
+    volume: Optional[float] = None
+    amount: Optional[float] = None
+    num_trades: Optional[float] = None
+    high_limited: Optional[float] = None
+    low_limited: Optional[float] = None
+    ask_price1: Optional[float] = None
+    ask_price2: Optional[float] = None
+    ask_price3: Optional[float] = None
+    ask_price4: Optional[float] = None
+    ask_price5: Optional[float] = None
+    ask_volume1: Optional[int] = None
+    ask_volume2: Optional[int] = None
+    ask_volume3: Optional[int] = None
+    ask_volume4: Optional[int] = None
+    ask_volume5: Optional[int] = None
+    bid_price1: Optional[float] = None
+    bid_price2: Optional[float] = None
+    bid_price3: Optional[float] = None
+    bid_price4: Optional[float] = None
+    bid_price5: Optional[float] = None
+    bid_volume1: Optional[int] = None
+    bid_volume2: Optional[int] = None
+    bid_volume3: Optional[int] = None
+    bid_volume4: Optional[int] = None
+    bid_volume5: Optional[int] = None
+    iopv: Optional[float] = None
+    trading_phase_code: Optional[str] = None
+    total_long_position: Optional[int] = None
+    pre_settle: Optional[float] = None
+    auction_price: Optional[float] = None
+    auction_volume: Optional[int] = None
+    settle: Optional[float] = None
+    contract_type: Optional[str] = None
+    expire_date: Optional[int] = None
+    underlying_security_code: Optional[str] = None
+    exercise_price: Optional[float] = None
+    action_day: Optional[str] = None
+    trading_day: Optional[str] = None
+    pre_open_interest: Optional[int] = None
+    open_interest: Optional[int] = None
+    average_price: Optional[float] = None
+    nominal_price: Optional[float] = None
+    ref_price: Optional[float] = None
+    bid_price_limit_up: Optional[float] = None
+    bid_price_limit_down: Optional[float] = None
+    offer_price_limit_up: Optional[float] = None
+    offer_price_limit_down: Optional[float] = None
+    source: str = DEFAULT_SOURCE
+    synced_at: datetime = field(default_factory=utcnow)
+    created_at: datetime = field(default_factory=utcnow)
+    updated_at: datetime = field(default_factory=utcnow)
+
+
+@dataclass(frozen=True)
 class SyncTaskLogRow:
     """同步任务日志行.
 
@@ -256,6 +369,10 @@ __all__ = [
     "DEFAULT_SOURCE",
     "HistoryStockStatusQuery",
     "HistoryStockStatusRow",
+    "MarketKlineQuery",
+    "MarketKlineRow",
+    "MarketSnapshotQuery",
+    "MarketSnapshotRow",
     "HistCodeDailyRow",
     "HistCodeQuery",
     "PriceFactorQuery",

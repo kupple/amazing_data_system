@@ -21,12 +21,23 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None  # type: ignore
 
-from amazingdata_constants import FactorType, Market
+from amazingdata_constants import (
+    FactorType,
+    Market,
+    SNAPSHOT_FIELDS,
+    SNAPSHOT_FUTURE_FIELDS,
+    SNAPSHOT_HKT_FIELDS,
+    SNAPSHOT_INDEX_FIELDS,
+    SNAPSHOT_OPTION_FIELDS,
+    SnapshotKind,
+)
 from base_data import BaseDataSyncProvider
 from data_models import (
     CodeInfoRow,
     HistCodeDailyRow,
     HistoryStockStatusRow,
+    MarketKlineRow,
+    MarketSnapshotRow,
     PriceFactorRow,
     StockBasicRow,
     TradeCalendarRow,
@@ -35,6 +46,7 @@ from data_models import (
     to_yyyymmdd,
 )
 from info_data import InfoDataSyncProvider
+from market_data import MarketDataSyncProvider
 
 
 logger = logging.getLogger(__name__)
@@ -98,8 +110,10 @@ class AmazingDataSDKSession:
         self._ad = None
         self._base = None
         self._info = None
+        self._market = None
         self._connected = False
         self._calendar_cache: dict[str, list] = {}
+        self._raw_calendar_cache = None
 
     def ensure_connected(self) -> None:
         if self._connected:
@@ -136,6 +150,13 @@ class AmazingDataSDKSession:
     def info(self):
         self.ensure_connected()
         return self._info
+
+    @property
+    def market(self):
+        self.ensure_connected()
+        if self._market is None:
+            self._market = self._build_market_client()
+        return self._market
 
     def get_calendar_dates(self, market: str = Market.SH) -> list:
         self.ensure_connected()
@@ -181,6 +202,50 @@ class AmazingDataSDKSession:
         logger.warning("AmazingData get_calendar() 返回空结果")
         return []
 
+    def get_raw_calendar(self):
+        self.ensure_connected()
+        if self._raw_calendar_cache is None:
+            try:
+                self._raw_calendar_cache = self.base.get_calendar()
+            except Exception as exc:
+                logger.warning("AmazingData get_calendar() 原始结果获取失败: %s", exc)
+                self._raw_calendar_cache = []
+        return self._raw_calendar_cache
+
+    def resolve_period_value(self, period: str) -> int | str:
+        self.ensure_connected()
+        text = str(period).strip()
+        if not text:
+            raise ValueError("period 不能为空。")
+        if text.isdigit():
+            return int(text)
+
+        period_obj = getattr(getattr(self._ad, "constant", object()), "Period", None)
+        if period_obj is not None and hasattr(period_obj, text):
+            attr = getattr(period_obj, text)
+            return getattr(attr, "value", attr)
+        return text
+
+    def _build_market_client(self):
+        errors: list[str] = []
+        constructors = []
+        raw_calendar = self.get_raw_calendar()
+        if raw_calendar:
+            constructors.append(((raw_calendar,), "MarketData(calendar)"))
+        constructors.append((([],), "MarketData([])"))
+        constructors.append((tuple(), "MarketData()"))
+
+        for args, label in constructors:
+            try:
+                market = self._ad.MarketData(*args)
+                logger.info("AmazingData %s 初始化成功", label)
+                return market
+            except Exception as exc:
+                errors.append(f"{label}: {type(exc).__name__}: {exc}")
+                continue
+
+        raise RuntimeError("AmazingData MarketData 初始化失败: " + " | ".join(errors[-3:]))
+
     def close(self) -> None:
         if not self._connected or self._ad is None:
             return
@@ -195,10 +260,12 @@ class AmazingDataSDKSession:
             self._ad = None
             self._base = None
             self._info = None
+            self._market = None
             self._calendar_cache.clear()
+            self._raw_calendar_cache = None
 
 
-class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
+class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketDataSyncProvider):
     """把 AmazingData 官方 SDK 返回值转换成我们的本地行模型."""
 
     def __init__(self, config: AmazingDataSDKConfig) -> None:
@@ -400,6 +467,185 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
                 is_listed=_as_int(_record_get(record, "IS_LISTED", "is_listed")),
             )
 
+    def fetch_kline(
+        self,
+        code_list: Sequence[str],
+        begin_date: date,
+        end_date: date,
+        period: str,
+        begin_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+    ) -> Iterable[MarketKlineRow]:
+        normalized_codes = normalize_code_list(code_list)
+        if not normalized_codes:
+            return
+
+        period_value = self.session.resolve_period_value(period)
+        logger.info(
+            "AmazingData fetch_kline start code_count=%s begin_date=%s end_date=%s period=%s",
+            len(normalized_codes),
+            begin_date,
+            end_date,
+            period,
+        )
+        kwargs: dict[str, Any] = {
+            "begin_date": to_yyyymmdd(begin_date),
+            "end_date": to_yyyymmdd(end_date),
+            "period": period_value,
+        }
+        if begin_time is not None:
+            kwargs["begin_time"] = begin_time
+        if end_time is not None:
+            kwargs["end_time"] = end_time
+
+        result = self.session.market.query_kline(normalized_codes, **kwargs)
+        logger.info(
+            "AmazingData fetch_kline loaded result_type=%s rows=%s",
+            type(result).__name__,
+            _count_sdk_result_rows(result),
+        )
+        for record in _iter_records_from_sdk_result(
+            result,
+            action="query_kline",
+            injected_code_fields=("code", "CODE", "market_code", "MARKET_CODE"),
+            index_field="trade_time",
+        ):
+            code = _as_str(_record_get(record, "code", "CODE", "market_code", "MARKET_CODE"))
+            trade_time_value = _record_get(record, "trade_time", "TRADE_TIME")
+            if not code or trade_time_value is None:
+                continue
+            trade_time = _to_datetime(trade_time_value)
+            if trade_time is None:
+                continue
+            yield MarketKlineRow(
+                trade_time=trade_time,
+                trade_date=trade_time.date(),
+                code=code,
+                period=str(period),
+                open=_as_float(_record_get(record, "open", "OPEN")),
+                high=_as_float(_record_get(record, "high", "HIGH")),
+                low=_as_float(_record_get(record, "low", "LOW")),
+                close=_as_float(_record_get(record, "close", "CLOSE")),
+                volume=_as_float(_record_get(record, "volume", "VOLUME")),
+                amount=_as_float(_record_get(record, "amount", "AMOUNT")),
+            )
+
+    def fetch_snapshot(
+        self,
+        code_list: Sequence[str],
+        begin_date: date,
+        end_date: date,
+        begin_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+    ) -> Iterable[MarketSnapshotRow]:
+        normalized_codes = normalize_code_list(code_list)
+        if not normalized_codes:
+            return
+
+        logger.info(
+            "AmazingData fetch_snapshot start code_count=%s begin_date=%s end_date=%s",
+            len(normalized_codes),
+            begin_date,
+            end_date,
+        )
+        kwargs: dict[str, Any] = {
+            "begin_date": to_yyyymmdd(begin_date),
+            "end_date": to_yyyymmdd(end_date),
+        }
+        if begin_time is not None:
+            kwargs["begin_time"] = begin_time
+        if end_time is not None:
+            kwargs["end_time"] = end_time
+
+        result = self.session.market.query_snapshot(normalized_codes, **kwargs)
+        logger.info(
+            "AmazingData fetch_snapshot loaded result_type=%s rows=%s",
+            type(result).__name__,
+            _count_sdk_result_rows(result),
+        )
+        for code, frame in _iter_code_frames_from_result(result, action="query_snapshot"):
+            snapshot_kind = _detect_snapshot_kind(frame)
+            for record in _iter_records_from_sdk_result(
+                {code: frame},
+                action="query_snapshot",
+                injected_code_fields=("code", "CODE", "market_code", "MARKET_CODE"),
+                index_field="trade_time",
+            ):
+                market_code = _as_str(_record_get(record, "code", "CODE", "market_code", "MARKET_CODE"))
+                trade_time_value = _record_get(record, "trade_time", "TRADE_TIME")
+                if not market_code or trade_time_value is None:
+                    continue
+                trade_time = _to_datetime(trade_time_value)
+                if trade_time is None:
+                    continue
+                yield MarketSnapshotRow(
+                    trade_time=trade_time,
+                    trade_date=trade_time.date(),
+                    code=market_code,
+                    snapshot_kind=snapshot_kind,
+                    pre_close=_as_float(_record_get(record, "pre_close", "PRECLOSE", "PRE_CLOSE")),
+                    last=_as_float(_record_get(record, "last", "LAST")),
+                    open=_as_float(_record_get(record, "open", "OPEN")),
+                    high=_as_float(_record_get(record, "high", "HIGH")),
+                    low=_as_float(_record_get(record, "low", "LOW")),
+                    close=_as_float(_record_get(record, "close", "CLOSE")),
+                    volume=_as_float(_record_get(record, "volume", "VOLUME")),
+                    amount=_as_float(_record_get(record, "amount", "AMOUNT")),
+                    num_trades=_as_float(_record_get(record, "num_trades", "NUM_TRADES")),
+                    high_limited=_as_float(_record_get(record, "high_limited", "HIGH_LIMITED")),
+                    low_limited=_as_float(_record_get(record, "low_limited", "LOW_LIMITED")),
+                    ask_price1=_as_float(_record_get(record, "ask_price1", "ASK_PRICE1")),
+                    ask_price2=_as_float(_record_get(record, "ask_price2", "ASK_PRICE2")),
+                    ask_price3=_as_float(_record_get(record, "ask_price3", "ASK_PRICE3")),
+                    ask_price4=_as_float(_record_get(record, "ask_price4", "ASK_PRICE4")),
+                    ask_price5=_as_float(_record_get(record, "ask_price5", "ASK_PRICE5")),
+                    ask_volume1=_as_int(_record_get(record, "ask_volume1", "ASK_VOLUME1")),
+                    ask_volume2=_as_int(_record_get(record, "ask_volume2", "ASK_VOLUME2")),
+                    ask_volume3=_as_int(_record_get(record, "ask_volume3", "ASK_VOLUME3")),
+                    ask_volume4=_as_int(_record_get(record, "ask_volume4", "ASK_VOLUME4")),
+                    ask_volume5=_as_int(_record_get(record, "ask_volume5", "ASK_VOLUME5")),
+                    bid_price1=_as_float(_record_get(record, "bid_price1", "BID_PRICE1")),
+                    bid_price2=_as_float(_record_get(record, "bid_price2", "BID_PRICE2")),
+                    bid_price3=_as_float(_record_get(record, "bid_price3", "BID_PRICE3")),
+                    bid_price4=_as_float(_record_get(record, "bid_price4", "BID_PRICE4")),
+                    bid_price5=_as_float(_record_get(record, "bid_price5", "BID_PRICE5")),
+                    bid_volume1=_as_int(_record_get(record, "bid_volume1", "BID_VOLUME1")),
+                    bid_volume2=_as_int(_record_get(record, "bid_volume2", "BID_VOLUME2")),
+                    bid_volume3=_as_int(_record_get(record, "bid_volume3", "BID_VOLUME3")),
+                    bid_volume4=_as_int(_record_get(record, "bid_volume4", "BID_VOLUME4")),
+                    bid_volume5=_as_int(_record_get(record, "bid_volume5", "BID_VOLUME5")),
+                    iopv=_as_float(_record_get(record, "iopv", "IOPV")),
+                    trading_phase_code=_as_str(_record_get(record, "trading_phase_code", "TRADING_PHASE_CODE")),
+                    total_long_position=_as_int(_record_get(record, "total_long_position", "TOTAL_LONG_POSITION")),
+                    pre_settle=_as_float(_record_get(record, "pre_settle", "PRE_SETTLE")),
+                    auction_price=_as_float(_record_get(record, "auction_price", "AUCTION_PRICE")),
+                    auction_volume=_as_int(_record_get(record, "auction_volume", "AUCTION_VOLUME")),
+                    settle=_as_float(_record_get(record, "settle", "SETTLE")),
+                    contract_type=_as_str(_record_get(record, "contract_type", "CONTRACT_TYPE")),
+                    expire_date=_as_int(_record_get(record, "expire_date", "EXPIRE_DATE")),
+                    underlying_security_code=_as_str(
+                        _record_get(record, "underlying_security_code", "UNDERLYING_SECURITY_CODE")
+                    ),
+                    exercise_price=_as_float(_record_get(record, "exercise_price", "EXERCISE_PRICE")),
+                    action_day=_as_str(_record_get(record, "action_day", "ACTION_DAY")),
+                    trading_day=_as_str(_record_get(record, "trading_day", "TRADING_DAY")),
+                    pre_open_interest=_as_int(_record_get(record, "pre_open_interest", "PRE_OPEN_INTEREST")),
+                    open_interest=_as_int(_record_get(record, "open_interest", "OPEN_INTEREST")),
+                    average_price=_as_float(_record_get(record, "average_price", "AVERAGE_PRICE")),
+                    nominal_price=_as_float(_record_get(record, "nominal_price", "NOMINAL_PRICE")),
+                    ref_price=_as_float(_record_get(record, "ref_price", "REF_PRICE")),
+                    bid_price_limit_up=_as_float(_record_get(record, "bid_price_limit_up", "BID_PRICE_LIMIT_UP")),
+                    bid_price_limit_down=_as_float(
+                        _record_get(record, "bid_price_limit_down", "BID_PRICE_LIMIT_DOWN")
+                    ),
+                    offer_price_limit_up=_as_float(
+                        _record_get(record, "offer_price_limit_up", "OFFER_PRICE_LIMIT_UP")
+                    ),
+                    offer_price_limit_down=_as_float(
+                        _record_get(record, "offer_price_limit_down", "OFFER_PRICE_LIMIT_DOWN")
+                    ),
+                )
+
     def fetch_history_stock_status(
         self,
         code_list: Sequence[str],
@@ -505,20 +751,24 @@ def _ensure_dataframe(obj: Any, action: str):
     return obj
 
 
-def _frame_to_records(frame):
-    return frame.to_dict("records")
+def _frame_to_records(frame, index_field: str | None = None):
+    normalized = frame.copy()
+    if index_field is not None and index_field not in normalized.columns:
+        normalized[index_field] = normalized.index
+    return normalized.to_dict("records")
 
 
 def _iter_records_from_sdk_result(
     obj: Any,
     action: str,
     injected_code_fields: Sequence[str] = ("MARKET_CODE", "market_code"),
+    index_field: str | None = None,
 ):
     if pd is None:  # pragma: no cover
         raise RuntimeError("未安装 pandas，无法处理 SDK 返回的 DataFrame。")
 
     if isinstance(obj, pd.DataFrame):
-        yield from _frame_to_records(obj)
+        yield from _frame_to_records(obj, index_field=index_field)
         return
 
     if isinstance(obj, dict):
@@ -530,10 +780,40 @@ def _iter_records_from_sdk_result(
                     f"{action} 返回 dict 时，value 期望为 DataFrame，实际得到 {type(value).__name__}"
                 )
             code_text = _as_str(code)
-            for record in _frame_to_records(value):
+            for record in _frame_to_records(value, index_field=index_field):
                 if code_text and all(_record_get(record, field) is None for field in injected_code_fields):
                     record[injected_code_fields[0]] = code_text
                 yield record
+        return
+
+    raise TypeError(f"{action} 期望返回 DataFrame 或 dict，实际得到 {type(obj).__name__}")
+
+
+def _iter_code_frames_from_result(obj: Any, action: str):
+    if pd is None:  # pragma: no cover
+        raise RuntimeError("未安装 pandas，无法处理 SDK 返回的 DataFrame。")
+
+    if isinstance(obj, dict):
+        for code, value in obj.items():
+            if value is None:
+                continue
+            if not isinstance(value, pd.DataFrame):
+                raise TypeError(
+                    f"{action} 返回 dict 时，value 期望为 DataFrame，实际得到 {type(value).__name__}"
+                )
+            yield _as_str(code), value
+        return
+
+    if isinstance(obj, pd.DataFrame):
+        code_column = None
+        for candidate in ("code", "CODE", "market_code", "MARKET_CODE"):
+            if candidate in obj.columns:
+                code_column = candidate
+                break
+        if code_column is None:
+            raise TypeError(f"{action} 返回 DataFrame 时缺少 code 列，无法拆分为 dict[code, DataFrame]")
+        for code, frame in obj.groupby(code_column):
+            yield _as_str(code), frame.copy()
         return
 
     raise TypeError(f"{action} 期望返回 DataFrame 或 dict，实际得到 {type(obj).__name__}")
@@ -551,6 +831,22 @@ def _count_sdk_result_rows(obj: Any) -> int:
     return 0
 
 
+def _detect_snapshot_kind(frame) -> str:
+    columns = {str(col).strip().lower() for col in frame.columns}
+    if {"total_long_position", "pre_settle", "exercise_price"} & columns:
+        return SnapshotKind.SNAPSHOT_OPTION
+    if {"nominal_price", "ref_price", "bid_price_limit_up", "offer_price_limit_up"} & columns:
+        return SnapshotKind.SNAPSHOT_HKT
+    if {"action_day", "trading_day", "open_interest"} & columns:
+        return SnapshotKind.SNAPSHOT_FUTURE
+    if columns.issubset(set(SNAPSHOT_INDEX_FIELDS)):
+        return SnapshotKind.SNAPSHOT_INDEX
+    if not ({"ask_price1", "bid_price1", "trading_phase_code"} & columns):
+        if {"last", "pre_close", "open", "high", "low", "close", "volume", "amount"} <= columns:
+            return SnapshotKind.SNAPSHOT_INDEX
+    return SnapshotKind.SNAPSHOT
+
+
 def _record_get(record: dict[str, Any], *candidates: str) -> Any:
     for candidate in candidates:
         if candidate in record:
@@ -561,6 +857,22 @@ def _record_get(record: dict[str, Any], *candidates: str) -> Any:
             return record[upper]
         if lower in record:
             return record[lower]
+    return None
+
+
+def _to_datetime(value: Any):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if pd is not None:
+        try:
+            dt = pd.to_datetime(value)
+            if pd.isna(dt):
+                return None
+            return dt.to_pydatetime()
+        except Exception:
+            return None
     return None
 
 

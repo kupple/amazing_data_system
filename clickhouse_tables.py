@@ -26,6 +26,8 @@ AD_PRICE_FACTOR_TABLE = "ad_price_factor"
 AD_SYNC_TASK_LOG_TABLE = "ad_sync_task_log"
 AD_STOCK_BASIC_DAILY_TABLE = "ad_stock_basic_daily"
 AD_HISTORY_STOCK_STATUS_DAILY_TABLE = "ad_history_stock_status_daily"
+AD_MARKET_KLINE_TABLE = "ad_market_kline"
+AD_MARKET_SNAPSHOT_TABLE = "ad_market_snapshot"
 
 
 CREATE_AD_TRADE_CALENDAR_TABLE = f"""
@@ -176,6 +178,101 @@ ORDER BY (trade_date, market_code)
 """
 
 
+CREATE_AD_MARKET_KLINE_TABLE = f"""
+CREATE TABLE IF NOT EXISTS {AD_MARKET_KLINE_TABLE}
+(
+    trade_time DateTime64(3),
+    trade_date Date,
+    code String,
+    period LowCardinality(String),
+    open Nullable(Float64),
+    high Nullable(Float64),
+    low Nullable(Float64),
+    close Nullable(Float64),
+    volume Nullable(Float64),
+    amount Nullable(Float64),
+    source LowCardinality(String) DEFAULT 'amazingdata',
+    synced_at DateTime64(3),
+    created_at DateTime64(3) DEFAULT now64(3),
+    updated_at DateTime64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (period, code, trade_time)
+"""
+
+
+CREATE_AD_MARKET_SNAPSHOT_TABLE = f"""
+CREATE TABLE IF NOT EXISTS {AD_MARKET_SNAPSHOT_TABLE}
+(
+    trade_time DateTime64(3),
+    trade_date Date,
+    code String,
+    snapshot_kind LowCardinality(String),
+    pre_close Nullable(Float64),
+    last Nullable(Float64),
+    open Nullable(Float64),
+    high Nullable(Float64),
+    low Nullable(Float64),
+    close Nullable(Float64),
+    volume Nullable(Float64),
+    amount Nullable(Float64),
+    num_trades Nullable(Float64),
+    high_limited Nullable(Float64),
+    low_limited Nullable(Float64),
+    ask_price1 Nullable(Float64),
+    ask_price2 Nullable(Float64),
+    ask_price3 Nullable(Float64),
+    ask_price4 Nullable(Float64),
+    ask_price5 Nullable(Float64),
+    ask_volume1 Nullable(Int64),
+    ask_volume2 Nullable(Int64),
+    ask_volume3 Nullable(Int64),
+    ask_volume4 Nullable(Int64),
+    ask_volume5 Nullable(Int64),
+    bid_price1 Nullable(Float64),
+    bid_price2 Nullable(Float64),
+    bid_price3 Nullable(Float64),
+    bid_price4 Nullable(Float64),
+    bid_price5 Nullable(Float64),
+    bid_volume1 Nullable(Int64),
+    bid_volume2 Nullable(Int64),
+    bid_volume3 Nullable(Int64),
+    bid_volume4 Nullable(Int64),
+    bid_volume5 Nullable(Int64),
+    iopv Nullable(Float64),
+    trading_phase_code Nullable(String),
+    total_long_position Nullable(Int64),
+    pre_settle Nullable(Float64),
+    auction_price Nullable(Float64),
+    auction_volume Nullable(Int64),
+    settle Nullable(Float64),
+    contract_type Nullable(String),
+    expire_date Nullable(Int32),
+    underlying_security_code Nullable(String),
+    exercise_price Nullable(Float64),
+    action_day Nullable(String),
+    trading_day Nullable(String),
+    pre_open_interest Nullable(Int64),
+    open_interest Nullable(Int64),
+    average_price Nullable(Float64),
+    nominal_price Nullable(Float64),
+    ref_price Nullable(Float64),
+    bid_price_limit_up Nullable(Float64),
+    bid_price_limit_down Nullable(Float64),
+    offer_price_limit_up Nullable(Float64),
+    offer_price_limit_down Nullable(Float64),
+    source LowCardinality(String) DEFAULT 'amazingdata',
+    synced_at DateTime64(3),
+    created_at DateTime64(3) DEFAULT now64(3),
+    updated_at DateTime64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (snapshot_kind, code, trade_time)
+"""
+
+
 BASE_DATA_TABLE_DDLS = (
     CREATE_AD_TRADE_CALENDAR_TABLE,
     CREATE_AD_CODE_INFO_DAILY_TABLE,
@@ -187,6 +284,11 @@ BASE_DATA_TABLE_DDLS = (
 INFO_DATA_TABLE_DDLS = (
     CREATE_AD_STOCK_BASIC_DAILY_TABLE,
     CREATE_AD_HISTORY_STOCK_STATUS_DAILY_TABLE,
+)
+
+MARKET_DATA_TABLE_DDLS = (
+    CREATE_AD_MARKET_KLINE_TABLE,
+    CREATE_AD_MARKET_SNAPSHOT_TABLE,
 )
 
 
@@ -202,16 +304,26 @@ def iter_info_data_table_ddls() -> tuple[str, ...]:
     return INFO_DATA_TABLE_DDLS
 
 
+def iter_market_data_table_ddls() -> tuple[str, ...]:
+    """按固定顺序返回 MarketData 当前已实现接口所需 DDL."""
+
+    return MARKET_DATA_TABLE_DDLS
+
+
 __all__ = [
     "AD_CODE_INFO_DAILY_TABLE",
     "AD_HISTORY_STOCK_STATUS_DAILY_TABLE",
     "AD_HIST_CODE_DAILY_TABLE",
+    "AD_MARKET_KLINE_TABLE",
+    "AD_MARKET_SNAPSHOT_TABLE",
     "AD_PRICE_FACTOR_TABLE",
     "AD_STOCK_BASIC_DAILY_TABLE",
     "AD_SYNC_TASK_LOG_TABLE",
     "AD_TRADE_CALENDAR_TABLE",
     "BASE_DATA_TABLE_DDLS",
     "INFO_DATA_TABLE_DDLS",
+    "MARKET_DATA_TABLE_DDLS",
     "iter_base_data_table_ddls",
     "iter_info_data_table_ddls",
+    "iter_market_data_table_ddls",
 ]

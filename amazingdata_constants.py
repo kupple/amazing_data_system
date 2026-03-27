@@ -255,6 +255,16 @@ STOCK_SYNC_PERIODS = (
 )
 
 
+class SnapshotKind:
+    """历史快照的结构类别."""
+
+    SNAPSHOT = "snapshot"
+    SNAPSHOT_INDEX = "snapshot_index"
+    SNAPSHOT_OPTION = "snapshot_option"
+    SNAPSHOT_HKT = "snapshot_hkt"
+    SNAPSHOT_FUTURE = "snapshot_future"
+
+
 class ReportType:
     """财务报告期代码.
 
@@ -534,6 +544,15 @@ SNAPSHOT_HKT_FIELDS = (
 )
 
 
+SNAPSHOT_KIND_TO_FIELDS = {
+    SnapshotKind.SNAPSHOT: SNAPSHOT_FIELDS,
+    SnapshotKind.SNAPSHOT_INDEX: SNAPSHOT_INDEX_FIELDS,
+    SnapshotKind.SNAPSHOT_OPTION: SNAPSHOT_OPTION_FIELDS,
+    SnapshotKind.SNAPSHOT_HKT: SNAPSHOT_HKT_FIELDS,
+    SnapshotKind.SNAPSHOT_FUTURE: SNAPSHOT_FUTURE_FIELDS,
+}
+
+
 # K 线字段是最基础的一组行情结构，日线和分钟线都可以复用这套字段定义。
 KLINE_FIELDS = (
     "code",
@@ -752,6 +771,8 @@ __all__ = [
     "ReportType",
     "SECURITY_TYPE_ALIASES",
     "SECURITY_STATUS_LABELS",
+    "SNAPSHOT_KIND_TO_FIELDS",
+    "SnapshotKind",
     "SNAPSHOT_FIELDS",
     "SNAPSHOT_FUTURE_FIELDS",
     "SNAPSHOT_HKT_FIELDS",
