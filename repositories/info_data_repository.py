@@ -187,7 +187,7 @@ class InfoDataRepository(BaseDataRepository):
         sql = f"""
         SELECT
             market_code,
-            formatDateTime(trade_date, '%Y%m%d') AS trade_date,
+            trade_date,
             argMax(preclose, updated_at) AS preclose,
             argMax(high_limited, updated_at) AS high_limited,
             argMax(low_limited, updated_at) AS low_limited,
@@ -215,6 +215,7 @@ class InfoDataRepository(BaseDataRepository):
         if frame.empty:
             return frame
 
+        frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.strftime("%Y%m%d")
         rename_map = {db_name: raw_name for raw_name, db_name in HISTORY_STOCK_STATUS_FIELD_DB_MAPPING.items()}
         frame = frame.rename(columns=rename_map)
         frame["_code_order"] = frame["MARKET_CODE"].apply(lambda value: query.code_list.index(value))
