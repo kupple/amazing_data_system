@@ -528,6 +528,13 @@ class MarketData:
         if text in self._period_cache:
             logger.info("resolve_period_token cache_hit raw_period=%s resolved_period=%s", period, self._period_cache[text])
             return self._period_cache[text]
+        # 当前项目第一阶段只正式同步日线。
+        # 你已经确认官方 SDK 的 `Period.day.value == 10008`，
+        # 这里直接短路到官方枚举值，避免运行时动态解析卡住。
+        if text == PeriodName.DAY:
+            self._period_cache[text] = "10008"
+            logger.info("resolve_period_token shortcut raw_period=%s resolved_period=%s", period, "10008")
+            return "10008"
         if text.isdigit():
             self._period_cache[text] = text
             logger.info("resolve_period_token numeric raw_period=%s resolved_period=%s", period, text)
