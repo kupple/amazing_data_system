@@ -795,16 +795,12 @@ def _iter_code_frames_from_result(obj: Any, action: str):
     if pd is None:  # pragma: no cover
         raise RuntimeError("未安装 pandas，无法处理 SDK 返回的 DataFrame。")
 
-    if isinstance(obj, dict):
-        for code, value in obj.items():
-            if value is None:
-                continue
-            if not isinstance(value, pd.DataFrame):
-                raise TypeError(
-                    f"{action} 返回 dict 时，value 期望为 DataFrame，实际得到 {type(value).__name__}"
-                )
-            yield _as_str(code), value
-        return
+    yield from _iter_code_frames_from_result_inner(obj=obj, action=action, parent_code=None)
+
+
+def _iter_code_frames_from_result_inner(obj: Any, action: str, parent_code: Optional[str]):
+    if pd is None:  # pragma: no cover
+        raise RuntimeError("未安装 pandas，无法处理 SDK 返回的 DataFrame。")
 
     if isinstance(obj, pd.DataFrame):
         code_column = None
@@ -812,10 +808,30 @@ def _iter_code_frames_from_result(obj: Any, action: str):
             if candidate in obj.columns:
                 code_column = candidate
                 break
-        if code_column is None:
-            raise TypeError(f"{action} 返回 DataFrame 时缺少 code 列，无法拆分为 dict[code, DataFrame]")
-        for code, frame in obj.groupby(code_column):
-            yield _as_str(code), frame.copy()
+        if code_column is not None:
+            for code, frame in obj.groupby(code_column):
+                yield _as_str(code), frame.copy()
+            return
+        if parent_code is not None:
+            yield parent_code, obj
+            return
+        raise TypeError(f"{action} 返回 DataFrame 时缺少 code 列，无法拆分为 dict[code, DataFrame]")
+
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if value is None:
+                continue
+            current_code = _as_str(key) or parent_code
+            if isinstance(value, (dict, pd.DataFrame)):
+                yield from _iter_code_frames_from_result_inner(
+                    obj=value,
+                    action=action,
+                    parent_code=current_code,
+                )
+                continue
+            raise TypeError(
+                f"{action} 返回 dict 时，叶子节点期望为 DataFrame 或 dict，实际得到 {type(value).__name__}"
+            )
         return
 
     raise TypeError(f"{action} 期望返回 DataFrame 或 dict，实际得到 {type(obj).__name__}")
@@ -827,8 +843,7 @@ def _count_sdk_result_rows(obj: Any) -> int:
     if isinstance(obj, dict):
         total = 0
         for value in obj.values():
-            if pd is not None and isinstance(value, pd.DataFrame):
-                total += int(len(value))
+            total += _count_sdk_result_rows(value)
         return total
     return 0
 
