@@ -20,30 +20,14 @@ from typing import Iterable, Sequence
 
 from amazingdata_constants import Market, PeriodName, SecurityType
 from amazingdata_sdk_provider import AmazingDataSDKConfig, AmazingDataSDKProvider
-from base_data import BaseData
+from base_data import BaseData, BaseDataCacheMissError
 from clickhouse_client import ClickHouseConfig
 from market_data import MarketData
 
 
 logger = logging.getLogger(__name__)
 DEFAULT_FULL_SYNC_BEGIN_DATE = 20100101
-DEFAULT_KLINE_SECURITY_TYPES = (
-    SecurityType.EXTRA_STOCK_A,
-    SecurityType.EXTRA_ETF,
-    SecurityType.EXTRA_KZZ,
-    SecurityType.EXTRA_INDEX_A,
-    SecurityType.EXTRA_ETF_OP,
-    SecurityType.EXTRA_FUTURE,
-)
-DEFAULT_SNAPSHOT_SECURITY_TYPES = (
-    SecurityType.EXTRA_STOCK_A,
-    SecurityType.EXTRA_ETF,
-    SecurityType.EXTRA_KZZ,
-    SecurityType.EXTRA_INDEX_A,
-    SecurityType.EXTRA_HKT,
-    SecurityType.EXTRA_ETF_OP,
-    SecurityType.EXTRA_FUTURE,
-)
+DEFAULT_SYNC_SECURITY_TYPE = SecurityType.EXTRA_STOCK_A
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,8 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-file", default=".env", help=argparse.SUPPRESS)
     parser.add_argument(
         "--security-type",
-        default="",
-        help="可传单个或逗号分隔多个 security_type；不传则默认同步全部品种",
+        default=DEFAULT_SYNC_SECURITY_TYPE,
+        help="默认使用 EXTRA_STOCK_A，同步 A 股股票",
     )
     parser.add_argument("--codes", default="", help="逗号分隔的证券代码列表；不传则自动从代码池获取")
     parser.add_argument("--begin-date", type=int, help="开始日期 YYYYMMDD；默认 20100101")
@@ -87,7 +71,7 @@ def main() -> int:
             begin_date=args.begin_date,
             end_date=args.end_date,
         )
-        code_list = resolve_code_list(
+        code_groups = resolve_code_groups(
             task=args.task,
             base_data=base_data,
             raw_security_type=args.security_type,
@@ -96,9 +80,11 @@ def main() -> int:
         )
 
         logger.info(
-            "sync task=%s code_count=%s begin_date=%s end_date=%s batch_size=%s",
+            "sync task=%s group_count=%s total_code_count=%s security_type=%s begin_date=%s end_date=%s batch_size=%s",
             args.task,
-            len(code_list),
+            len(code_groups),
+            sum(len(codes) for _, codes in code_groups),
+            args.security_type,
             begin_date,
             end_date,
             args.batch_size,
@@ -107,7 +93,7 @@ def main() -> int:
         if args.task == "daily_kline":
             return run_daily_kline(
                 market_data=market_data,
-                code_list=code_list,
+                code_groups=code_groups,
                 begin_date=begin_date,
                 end_date=end_date,
                 batch_size=args.batch_size,
@@ -117,7 +103,7 @@ def main() -> int:
         if args.task == "daily_snapshot":
             return run_daily_snapshot(
                 market_data=market_data,
-                code_list=code_list,
+                code_groups=code_groups,
                 begin_date=begin_date,
                 end_date=end_date,
                 batch_size=args.batch_size,
@@ -141,7 +127,7 @@ def main() -> int:
 
 def run_daily_kline(
     market_data: MarketData,
-    code_list: Sequence[str],
+    code_groups: Sequence[tuple[str, list[str]]],
     begin_date: int,
     end_date: int,
     batch_size: int,
@@ -160,34 +146,51 @@ def run_daily_kline(
     """
 
     total_inserted = 0
-    batches = list(iter_batches(code_list, batch_size))
-    total_batches = len(batches)
     logger.info(
-        "daily_kline start total_codes=%s total_batches=%s begin_date=%s end_date=%s",
-        len(code_list),
-        total_batches,
+        "daily_kline start total_groups=%s total_codes=%s begin_date=%s end_date=%s",
+        len(code_groups),
+        sum(len(codes) for _, codes in code_groups),
         begin_date,
         end_date,
     )
-    for batch_index, batch_codes in enumerate(batches, start=1):
+    for group_index, (security_type, code_list) in enumerate(code_groups, start=1):
+        batches = list(iter_batches(code_list, batch_size))
+        total_batches = len(batches)
         logger.info(
-            "daily_kline batch=%s/%s code_count=%s first_code=%s last_code=%s period=%s",
-            batch_index,
+            "daily_kline group=%s/%s security_type=%s total_codes=%s total_batches=%s",
+            group_index,
+            len(code_groups),
+            security_type,
+            len(code_list),
             total_batches,
-            len(batch_codes),
-            batch_codes[0],
-            batch_codes[-1],
-            PeriodName.DAY,
         )
-        logger.info("daily_kline batch=%s codes=%s", batch_index, batch_codes)
-        inserted = market_data.sync_kline(
-            code_list=batch_codes,
-            begin_date=begin_date,
-            end_date=end_date,
-            period=PeriodName.DAY,
-            force=force,
-        )
-        total_inserted += int(inserted)
+        for batch_index, batch_codes in enumerate(batches, start=1):
+            logger.info(
+                "daily_kline group=%s/%s batch=%s/%s security_type=%s code_count=%s first_code=%s last_code=%s period=%s",
+                group_index,
+                len(code_groups),
+                batch_index,
+                total_batches,
+                security_type,
+                len(batch_codes),
+                batch_codes[0],
+                batch_codes[-1],
+                PeriodName.DAY,
+            )
+            logger.info(
+                "daily_kline security_type=%s batch=%s codes=%s",
+                security_type,
+                batch_index,
+                batch_codes,
+            )
+            inserted = market_data.sync_kline(
+                code_list=batch_codes,
+                begin_date=begin_date,
+                end_date=end_date,
+                period=PeriodName.DAY,
+                force=force,
+            )
+            total_inserted += int(inserted)
 
     logger.info("daily_kline finished total_inserted=%s", total_inserted)
     return 0
@@ -195,7 +198,7 @@ def run_daily_kline(
 
 def run_daily_snapshot(
     market_data: MarketData,
-    code_list: Sequence[str],
+    code_groups: Sequence[tuple[str, list[str]]],
     begin_date: int,
     end_date: int,
     batch_size: int,
@@ -204,32 +207,49 @@ def run_daily_snapshot(
     """按批同步历史快照."""
 
     total_inserted = 0
-    batches = list(iter_batches(code_list, batch_size))
-    total_batches = len(batches)
     logger.info(
-        "daily_snapshot start total_codes=%s total_batches=%s begin_date=%s end_date=%s",
-        len(code_list),
-        total_batches,
+        "daily_snapshot start total_groups=%s total_codes=%s begin_date=%s end_date=%s",
+        len(code_groups),
+        sum(len(codes) for _, codes in code_groups),
         begin_date,
         end_date,
     )
-    for batch_index, batch_codes in enumerate(batches, start=1):
+    for group_index, (security_type, code_list) in enumerate(code_groups, start=1):
+        batches = list(iter_batches(code_list, batch_size))
+        total_batches = len(batches)
         logger.info(
-            "daily_snapshot batch=%s/%s code_count=%s first_code=%s last_code=%s",
-            batch_index,
+            "daily_snapshot group=%s/%s security_type=%s total_codes=%s total_batches=%s",
+            group_index,
+            len(code_groups),
+            security_type,
+            len(code_list),
             total_batches,
-            len(batch_codes),
-            batch_codes[0],
-            batch_codes[-1],
         )
-        logger.info("daily_snapshot batch=%s codes=%s", batch_index, batch_codes)
-        inserted = market_data.sync_snapshot(
-            code_list=batch_codes,
-            begin_date=begin_date,
-            end_date=end_date,
-            force=force,
-        )
-        total_inserted += int(inserted)
+        for batch_index, batch_codes in enumerate(batches, start=1):
+            logger.info(
+                "daily_snapshot group=%s/%s batch=%s/%s security_type=%s code_count=%s first_code=%s last_code=%s",
+                group_index,
+                len(code_groups),
+                batch_index,
+                total_batches,
+                security_type,
+                len(batch_codes),
+                batch_codes[0],
+                batch_codes[-1],
+            )
+            logger.info(
+                "daily_snapshot security_type=%s batch=%s codes=%s",
+                security_type,
+                batch_index,
+                batch_codes,
+            )
+            inserted = market_data.sync_snapshot(
+                code_list=batch_codes,
+                begin_date=begin_date,
+                end_date=end_date,
+                force=force,
+            )
+            total_inserted += int(inserted)
 
     logger.info("daily_snapshot finished total_inserted=%s", total_inserted)
     return 0
@@ -249,51 +269,71 @@ def resolve_date_window(
     return resolved_begin_date, resolved_end_date
 
 
-def resolve_code_list(
+def resolve_code_groups(
     task: str,
     base_data: BaseData,
     raw_security_type: str,
     raw_codes: str,
     limit: int,
-) -> list[str]:
+) -> list[tuple[str, list[str]]]:
     codes = parse_codes(raw_codes)
     if not codes:
         security_types = resolve_security_types(task=task, raw_security_type=raw_security_type)
-        merged_codes: list[str] = []
+        groups: list[tuple[str, list[str]]] = []
+        skipped_security_types: list[str] = []
         for security_type in security_types:
-            part_codes = base_data.get_security_universe(security_type=security_type, force=False)
+            try:
+                part_codes = base_data.get_security_universe(security_type=security_type, force=False)
+            except BaseDataCacheMissError as exc:
+                logger.warning(
+                    "security_type=%s 未获取到证券代码，跳过该品种。error=%s",
+                    security_type,
+                    exc,
+                )
+                skipped_security_types.append(security_type)
+                continue
             logger.info(
                 "code_list source=base_data.get_security_universe security_type=%s raw_count=%s",
                 security_type,
                 len(part_codes),
             )
-            merged_codes.extend(part_codes)
-        codes = merged_codes
-        logger.info("code_list merged security_types=%s merged_raw_count=%s", security_types, len(codes))
-    else:
-        logger.info("code_list source=user_input raw_count=%s", len(codes))
+            part_codes = sorted(dict.fromkeys(part_codes))
+            if limit and limit > 0:
+                part_codes = part_codes[:limit]
+            if not part_codes:
+                skipped_security_types.append(security_type)
+                continue
+            logger.info(
+                "resolved code_list security_type=%s count=%s preview=%s",
+                security_type,
+                len(part_codes),
+                preview_codes(part_codes),
+            )
+            groups.append((security_type, part_codes))
+        logger.info(
+            "code_list grouped security_types=%s group_count=%s skipped_security_types=%s",
+            security_types,
+            len(groups),
+            skipped_security_types,
+        )
+        if not groups:
+            raise RuntimeError("未获取到可同步的证券代码。")
+        return groups
+
     codes = sorted(dict.fromkeys(codes))
     if limit and limit > 0:
         codes = codes[:limit]
     if not codes:
         raise RuntimeError("未获取到可同步的证券代码。")
-    logger.info(
-        "resolved code_list count=%s preview=%s",
-        len(codes),
-        preview_codes(codes),
-    )
-    return codes
+    logger.info("code_list source=user_input raw_count=%s preview=%s", len(codes), preview_codes(codes))
+    return [("user_input", codes)]
 
 
 def resolve_security_types(task: str, raw_security_type: str) -> list[str]:
     text = str(raw_security_type).strip()
     if text:
         return sorted(dict.fromkeys(item.strip() for item in text.split(",") if item.strip()))
-    if task == "daily_kline":
-        return list(DEFAULT_KLINE_SECURITY_TYPES)
-    if task == "daily_snapshot":
-        return list(DEFAULT_SNAPSHOT_SECURITY_TYPES)
-    return [SecurityType.EXTRA_STOCK_A]
+    return [DEFAULT_SYNC_SECURITY_TYPE]
 
 
 def parse_codes(raw: str) -> list[str]:
