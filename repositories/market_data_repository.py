@@ -142,6 +142,27 @@ class MarketDataRepository(BaseDataRepository):
             return None
         return min(latest_dates)
 
+    def load_latest_kline_trade_date_map(self, code_list: list[str], period: str) -> dict[str, object]:
+        if not code_list:
+            return {}
+        sql = f"""
+        SELECT code, max(trade_date) AS latest_trade_date
+        FROM {AD_MARKET_KLINE_TABLE}
+        WHERE period = {{period:String}}
+          AND code IN {{code_list:Array(String)}}
+        GROUP BY code
+        ORDER BY code
+        """
+        rows = self.client.query_rows(sql, {"period": period, "code_list": code_list})
+        result = {str(code): None for code in code_list}
+        for row in rows:
+            if not row:
+                continue
+            code = str(row[0])
+            latest_trade_date = row[1] if len(row) > 1 else None
+            result[code] = latest_trade_date
+        return result
+
     def load_latest_snapshot_trade_date(self, code_list: list[str]):
         if not code_list:
             return None

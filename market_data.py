@@ -258,42 +258,61 @@ class MarketData:
             period,
             period_token,
         )
-
-        latest_date = self.repository.load_latest_kline_trade_date(normalized_codes, period_token)
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        latest_date_map = self.repository.load_latest_kline_trade_date_map(normalized_codes, period_token)
+        buckets = self._bucket_codes_by_sync_start(
+            code_list=normalized_codes,
+            latest_date_map=latest_date_map,
+            requested_begin_date=begin,
+        )
         logger.info(
-            "sync_kline latest_date=%s sync_start=%s code_count=%s resolved_period=%s",
-            latest_date,
-            sync_start,
+            "sync_kline bucketed bucket_count=%s code_count=%s resolved_period=%s",
+            len(buckets),
             len(normalized_codes),
             period_token,
         )
-        scope_key = self._build_market_scope_key(
-            task_name="query_kline",
-            code_list=normalized_codes,
-            begin_date=begin,
-            end_date=end,
-            period=period_token,
-            begin_time=begin_time,
-            end_time=end_time,
-        )
-        return self._run_sync_job(
-            task_name="query_kline",
-            scope_key=scope_key,
-            target_table=AD_MARKET_KLINE_TABLE,
-            latest_date=latest_date,
-            fetch_rows=lambda _latest_date: self._provider_fetch_kline(
-                normalized_codes,
+
+        total_inserted = 0
+        for bucket_index, (sync_start, bucket_codes) in enumerate(sorted(buckets.items(), key=lambda item: item[0]), start=1):
+            bucket_latest_dates = [latest_date_map.get(code) for code in bucket_codes if latest_date_map.get(code) is not None]
+            bucket_latest_date = min(bucket_latest_dates) if bucket_latest_dates else None
+            logger.info(
+                "sync_kline bucket=%s/%s sync_start=%s latest_date=%s code_count=%s resolved_period=%s",
+                bucket_index,
+                len(buckets),
+                sync_start,
+                bucket_latest_date,
+                len(bucket_codes),
+                period_token,
+            )
+            scope_key = self._build_market_scope_key(
+                task_name="query_kline",
+                code_list=bucket_codes,
                 begin_date=sync_start,
                 end_date=end,
                 period=period_token,
                 begin_time=begin_time,
                 end_time=end_time,
-            ),
-            save_rows=self.repository.save_market_kline_rows,
-            row_date_getter=lambda row: row.trade_date,
-            force=force,
-        )
+            )
+            inserted = self._run_sync_job(
+                task_name="query_kline",
+                scope_key=scope_key,
+                target_table=AD_MARKET_KLINE_TABLE,
+                latest_date=bucket_latest_date,
+                fetch_rows=lambda _latest_date, bucket_codes=bucket_codes, sync_start=sync_start: self._provider_fetch_kline(
+                    bucket_codes,
+                    begin_date=sync_start,
+                    end_date=end,
+                    period=period_token,
+                    begin_time=begin_time,
+                    end_time=end_time,
+                ),
+                save_rows=self.repository.save_market_kline_rows,
+                row_date_getter=lambda row: row.trade_date,
+                force=force,
+            )
+            total_inserted += int(inserted)
+
+        return total_inserted
 
     def sync_snapshot(
         self,
@@ -574,6 +593,22 @@ class MarketData:
         if requested_begin_date is None:
             return latest_date
         return max(latest_date, requested_begin_date)
+
+    @classmethod
+    def _bucket_codes_by_sync_start(
+        cls,
+        code_list: Sequence[str],
+        latest_date_map: dict[str, object],
+        requested_begin_date: date,
+    ) -> dict[date, list[str]]:
+        buckets: dict[date, list[str]] = {}
+        for code in code_list:
+            latest_date = latest_date_map.get(code)
+            if latest_date is not None:
+                latest_date = to_ch_date(latest_date)
+            sync_start = cls._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=requested_begin_date)
+            buckets.setdefault(sync_start, []).append(code)
+        return buckets
 
     @staticmethod
     def _validate_date_range(begin_date: date, end_date: date) -> None:

@@ -34,11 +34,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AmazingData 正式同步入口")
     parser.add_argument("task", choices=["daily_kline", "daily_snapshot"])
     parser.add_argument("--env-file", default=".env", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--security-type",
-        default=DEFAULT_SYNC_SECURITY_TYPE,
-        help="默认使用 EXTRA_STOCK_A，同步 A 股股票",
-    )
     parser.add_argument("--codes", default="", help="逗号分隔的证券代码列表；不传则自动从代码池获取")
     parser.add_argument("--begin-date", type=int, help="开始日期 YYYYMMDD；默认 20100101")
     parser.add_argument("--end-date", type=int, help="结束日期 YYYYMMDD；默认最新交易日")
@@ -74,7 +69,6 @@ def main() -> int:
         code_groups = resolve_code_groups(
             task=args.task,
             base_data=base_data,
-            raw_security_type=args.security_type,
             raw_codes=args.codes,
             limit=args.limit,
         )
@@ -84,7 +78,7 @@ def main() -> int:
             args.task,
             len(code_groups),
             sum(len(codes) for _, codes in code_groups),
-            args.security_type,
+            DEFAULT_SYNC_SECURITY_TYPE,
             begin_date,
             end_date,
             args.batch_size,
@@ -282,13 +276,12 @@ def resolve_date_window(
 def resolve_code_groups(
     task: str,
     base_data: BaseData,
-    raw_security_type: str,
     raw_codes: str,
     limit: int,
 ) -> list[tuple[str, list[str]]]:
     codes = parse_codes(raw_codes)
     if not codes:
-        security_types = resolve_security_types(task=task, raw_security_type=raw_security_type)
+        security_types = resolve_security_types(task=task)
         groups: list[tuple[str, list[str]]] = []
         skipped_security_types: list[str] = []
         for security_type in security_types:
@@ -338,10 +331,7 @@ def resolve_code_groups(
     return [("user_input", codes)]
 
 
-def resolve_security_types(task: str, raw_security_type: str) -> list[str]:
-    text = str(raw_security_type).strip()
-    if text:
-        return sorted(dict.fromkeys(item.strip() for item in text.split(",") if item.strip()))
+def resolve_security_types(task: str) -> list[str]:
     return [DEFAULT_SYNC_SECURITY_TYPE]
 
 

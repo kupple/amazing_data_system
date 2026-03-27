@@ -929,6 +929,24 @@ def _to_datetime(value: Any):
         if value.tzinfo is None:
             return value.replace(tzinfo=SHANGHAI_TZ)
         return value
+    text = _as_str(value)
+    if text:
+        digits = "".join(ch for ch in text if ch.isdigit())
+        try:
+            if len(digits) == 8:
+                dt = datetime.strptime(digits, "%Y%m%d")
+                return dt.replace(tzinfo=SHANGHAI_TZ)
+            if len(digits) == 12:
+                dt = datetime.strptime(digits, "%Y%m%d%H%M")
+                return dt.replace(tzinfo=SHANGHAI_TZ)
+            if len(digits) == 14:
+                dt = datetime.strptime(digits, "%Y%m%d%H%M%S")
+                return dt.replace(tzinfo=SHANGHAI_TZ)
+            if len(digits) == 17:
+                dt = datetime.strptime(digits, "%Y%m%d%H%M%S%f")
+                return dt.replace(tzinfo=SHANGHAI_TZ)
+        except Exception:
+            pass
     if pd is not None:
         try:
             dt = pd.to_datetime(value)
