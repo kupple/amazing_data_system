@@ -214,7 +214,7 @@ class AmazingDataSDKSession:
                 self._raw_calendar_cache = []
         return self._raw_calendar_cache
 
-    def resolve_period_value(self, period: str) -> int | str:
+    def resolve_period_value(self, period: str | int) -> int:
         self.ensure_connected()
         text = str(period).strip()
         if not text:
@@ -225,8 +225,9 @@ class AmazingDataSDKSession:
         period_obj = getattr(getattr(self._ad, "constant", object()), "Period", None)
         if period_obj is not None and hasattr(period_obj, text):
             attr = getattr(period_obj, text)
-            return getattr(attr, "value", attr)
-        return text
+            value = getattr(attr, "value", attr)
+            return int(value)
+        raise ValueError(f"无法解析官方 Period 枚举: {period!r}")
 
     def _build_market_client(self):
         errors: list[str] = []
@@ -490,17 +491,21 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
             end_date,
             period,
         )
-        kwargs: dict[str, Any] = {
+        base_kwargs: dict[str, Any] = {
             "begin_date": to_yyyymmdd(begin_date),
             "end_date": to_yyyymmdd(end_date),
-            "period": period_value,
         }
         if begin_time is not None:
-            kwargs["begin_time"] = begin_time
+            base_kwargs["begin_time"] = begin_time
         if end_time is not None:
-            kwargs["end_time"] = end_time
+            base_kwargs["end_time"] = end_time
 
-        result = self.session.market.query_kline(normalized_codes, **kwargs)
+        result = self._query_kline_with_variants(
+            code_list=normalized_codes,
+            period=period,
+            period_value=period_value,
+            base_kwargs=base_kwargs,
+        )
         logger.info(
             "AmazingData fetch_kline loaded result_type=%s rows=%s",
             type(result).__name__,
@@ -531,6 +536,32 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
                 volume=_as_float(_record_get(record, "volume", "VOLUME")),
                 amount=_as_float(_record_get(record, "amount", "AMOUNT")),
             )
+
+    def _query_kline_with_variants(
+        self,
+        code_list: Sequence[str],
+        period: str,
+        period_value: int,
+        base_kwargs: dict[str, Any],
+    ):
+        variants: list[dict[str, Any]] = []
+        variant_with_resolved = dict(base_kwargs)
+        variant_with_resolved["period"] = int(period_value)
+        variants.append(variant_with_resolved)
+        errors: list[str] = []
+        for kwargs in variants:
+            try:
+                logger.info("AmazingData query_kline try kwargs=%s", kwargs)
+                result = self.session.market.query_kline(code_list, **kwargs)
+                if not _is_sdk_result_empty(result):
+                    return result
+                errors.append(f"kwargs={kwargs} -> empty_result")
+            except Exception as exc:
+                errors.append(f"kwargs={kwargs} -> {type(exc).__name__}: {exc}")
+                continue
+
+        logger.warning("AmazingData query_kline 所有尝试均未取到数据: %s", " | ".join(errors[-3:]))
+        return {}
 
     def fetch_snapshot(
         self,
@@ -846,6 +877,20 @@ def _count_sdk_result_rows(obj: Any) -> int:
             total += _count_sdk_result_rows(value)
         return total
     return 0
+
+
+def _is_sdk_result_empty(obj: Any) -> bool:
+    if obj is None:
+        return True
+    if pd is not None and isinstance(obj, pd.DataFrame):
+        return obj.empty
+    if isinstance(obj, dict):
+        if not obj:
+            return True
+        return all(_is_sdk_result_empty(value) for value in obj.values())
+    if isinstance(obj, (list, tuple, set)):
+        return len(obj) == 0
+    return False
 
 
 def _detect_snapshot_kind(frame) -> str:

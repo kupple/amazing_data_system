@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
             "query_snapshot",
         ],
     )
-    parser.add_argument("--env-file", default=".env", help="dotenv 文件路径")
+    parser.add_argument("--env-file", default=".env", help=argparse.SUPPRESS)
     parser.add_argument("--market", default=Market.SH)
     parser.add_argument("--security-type", default=SecurityType.EXTRA_STOCK_A)
     parser.add_argument("--codes", default="", help="逗号分隔的证券代码列表")

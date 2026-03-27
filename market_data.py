@@ -69,6 +69,7 @@ class MarketData:
     ) -> None:
         self.repository = repository
         self.sync_provider = sync_provider
+        self._period_cache: dict[str, str] = {}
 
     @classmethod
     def from_clickhouse_config(
@@ -106,7 +107,7 @@ class MarketData:
 
         begin = to_ch_date(begin_date)
         end = to_ch_date(end_date)
-        period_token = self._normalize_period(period)
+        period_token = self._resolve_period_token(period)
         self._validate_date_range(begin, end)
 
         self.sync_kline(
@@ -129,6 +130,26 @@ class MarketData:
                 end_time=end_time,
             )
         )
+        if not result:
+            self.sync_kline(
+                code_list=normalized_codes,
+                begin_date=begin,
+                end_date=end,
+                period=period_token,
+                begin_time=begin_time,
+                end_time=end_time,
+                force=True,
+            )
+            result = self.repository.load_kline_dict(
+                MarketKlineQuery(
+                    code_list=tuple(normalized_codes),
+                    begin_date=begin,
+                    end_date=end,
+                    period=period_token,
+                    begin_time=begin_time,
+                    end_time=end_time,
+                )
+            )
         if not result:
             raise BaseDataCacheMissError(
                 f"未找到 code_count={len(normalized_codes)} period={period_token} 的 kline 数据。"
@@ -170,6 +191,24 @@ class MarketData:
             )
         )
         if not result:
+            self.sync_snapshot(
+                code_list=normalized_codes,
+                begin_date=begin,
+                end_date=end,
+                begin_time=begin_time,
+                end_time=end_time,
+                force=True,
+            )
+            result = self.repository.load_snapshot_dict(
+                MarketSnapshotQuery(
+                    code_list=tuple(normalized_codes),
+                    begin_date=begin,
+                    end_date=end,
+                    begin_time=begin_time,
+                    end_time=end_time,
+                )
+            )
+        if not result:
             raise BaseDataCacheMissError(
                 f"未找到 code_count={len(normalized_codes)} 的 snapshot 数据。"
             )
@@ -191,7 +230,7 @@ class MarketData:
 
         begin = to_ch_date(begin_date)
         end = to_ch_date(end_date)
-        period_token = self._normalize_period(period)
+        period_token = self._resolve_period_token(period)
         self._validate_date_range(begin, end)
 
         latest_date = self.repository.load_latest_kline_trade_date(normalized_codes, period_token)
@@ -448,13 +487,25 @@ class MarketData:
             logger.exception("写入同步日志失败 task=%s scope=%s status=%s", task_name, scope_key, status)
 
     @staticmethod
-    def _normalize_period(period: str | int) -> str:
-        if isinstance(period, int):
-            return str(period)
+    def _resolve_period_token(self, period: str | int) -> str:
         text = str(period).strip()
         if not text:
             raise BaseDataParameterError("period 不能为空。")
-        return text
+        if text in self._period_cache:
+            return self._period_cache[text]
+        if text.isdigit():
+            self._period_cache[text] = text
+            return text
+        if self.sync_provider is None or not hasattr(self.sync_provider, "session"):
+            self._period_cache[text] = text
+            return text
+        try:
+            resolved = str(self.sync_provider.session.resolve_period_value(text))  # type: ignore[attr-defined]
+            self._period_cache[text] = resolved
+            return resolved
+        except Exception:
+            self._period_cache[text] = text
+            return text
 
     @staticmethod
     def _resolve_incremental_start_date(
