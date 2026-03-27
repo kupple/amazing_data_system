@@ -224,6 +224,13 @@ class MarketData:
         end_time: Optional[int] = None,
         force: bool = False,
     ) -> int:
+        logger.info(
+            "sync_kline enter raw_code_count=%s raw_begin_date=%s raw_end_date=%s raw_period=%s",
+            len(code_list),
+            begin_date,
+            end_date,
+            period,
+        )
         normalized_codes = normalize_code_list(code_list)
         if not normalized_codes:
             raise BaseDataParameterError("code_list 不能为空。")
@@ -519,19 +526,24 @@ class MarketData:
         if not text:
             raise BaseDataParameterError("period 不能为空。")
         if text in self._period_cache:
+            logger.info("resolve_period_token cache_hit raw_period=%s resolved_period=%s", period, self._period_cache[text])
             return self._period_cache[text]
         if text.isdigit():
             self._period_cache[text] = text
+            logger.info("resolve_period_token numeric raw_period=%s resolved_period=%s", period, text)
             return text
         if self.sync_provider is None or not hasattr(self.sync_provider, "session"):
             self._period_cache[text] = text
+            logger.info("resolve_period_token fallback raw_period=%s resolved_period=%s", period, text)
             return text
         try:
             resolved = str(self.sync_provider.session.resolve_period_value(text))  # type: ignore[attr-defined]
             self._period_cache[text] = resolved
+            logger.info("resolve_period_token sdk raw_period=%s resolved_period=%s", period, resolved)
             return resolved
         except Exception:
             self._period_cache[text] = text
+            logger.warning("resolve_period_token sdk_failed raw_period=%s fallback_period=%s", period, text)
             return text
 
     @staticmethod
