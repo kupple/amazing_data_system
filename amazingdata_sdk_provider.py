@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 try:
     import pandas as pd
@@ -50,6 +51,7 @@ from market_data import MarketDataSyncProvider
 
 
 logger = logging.getLogger(__name__)
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -864,13 +866,18 @@ def _to_datetime(value: Any):
     if value is None:
         return None
     if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=SHANGHAI_TZ)
         return value
     if pd is not None:
         try:
             dt = pd.to_datetime(value)
             if pd.isna(dt):
                 return None
-            return dt.to_pydatetime()
+            py_dt = dt.to_pydatetime()
+            if py_dt.tzinfo is None:
+                return py_dt.replace(tzinfo=SHANGHAI_TZ)
+            return py_dt
         except Exception:
             return None
     return None
