@@ -232,9 +232,24 @@ class MarketData:
         end = to_ch_date(end_date)
         period_token = self._resolve_period_token(period)
         self._validate_date_range(begin, end)
+        logger.info(
+            "sync_kline prepared code_count=%s begin_date=%s end_date=%s raw_period=%s resolved_period=%s",
+            len(normalized_codes),
+            begin,
+            end,
+            period,
+            period_token,
+        )
 
         latest_date = self.repository.load_latest_kline_trade_date(normalized_codes, period_token)
         sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        logger.info(
+            "sync_kline latest_date=%s sync_start=%s code_count=%s resolved_period=%s",
+            latest_date,
+            sync_start,
+            len(normalized_codes),
+            period_token,
+        )
         scope_key = self._build_market_scope_key(
             task_name="query_kline",
             code_list=normalized_codes,
@@ -278,9 +293,21 @@ class MarketData:
         begin = to_ch_date(begin_date)
         end = to_ch_date(end_date)
         self._validate_date_range(begin, end)
+        logger.info(
+            "sync_snapshot prepared code_count=%s begin_date=%s end_date=%s",
+            len(normalized_codes),
+            begin,
+            end,
+        )
 
         latest_date = self.repository.load_latest_snapshot_trade_date(normalized_codes)
         sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        logger.info(
+            "sync_snapshot latest_date=%s sync_start=%s code_count=%s",
+            latest_date,
+            sync_start,
+            len(normalized_codes),
+        )
         scope_key = self._build_market_scope_key(
             task_name="query_snapshot",
             code_list=normalized_codes,
