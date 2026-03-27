@@ -917,6 +917,11 @@ def _prepare_market_time_frame(frame, action: str, time_field: str = "trade_time
         normalized[time_field] = normalized[time_field.upper()]
         return normalized
 
+    for alias in ("kline_time", "KLINE_TIME", "snapshot_time", "SNAPSHOT_TIME"):
+        if alias in normalized.columns:
+            normalized[time_field] = normalized[alias]
+            return normalized
+
     for candidate in ("trade_date", "TRADE_DATE", "date", "DATE", "datetime", "DATETIME"):
         if candidate in normalized.columns:
             normalized[time_field] = normalized[candidate]
