@@ -228,7 +228,9 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
         start_date=None,
         end_date=None,
     ) -> Iterable[CodeInfoRow]:
+        logger.info("AmazingData fetch_code_info start security_type=%s", security_type)
         frame = _ensure_dataframe(self.session.base.get_code_info(security_type=security_type), "get_code_info")
+        logger.info("AmazingData fetch_code_info loaded rows=%s cols=%s", len(frame), len(frame.columns))
         snapshot_date = self.session.get_snapshot_date()
         if start_date is not None and snapshot_date < start_date:
             return
@@ -257,6 +259,12 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
         start_date=None,
         end_date=None,
     ) -> Iterable[HistCodeDailyRow]:
+        logger.info(
+            "AmazingData fetch_hist_code_daily start security_type=%s start_date=%s end_date=%s",
+            security_type,
+            start_date,
+            end_date,
+        )
         latest_trade_date = self.session.get_latest_trade_date(Market.SH)
         if latest_trade_date is None:
             return
@@ -314,6 +322,12 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
         if not normalized_codes:
             return
 
+        logger.info(
+            "AmazingData fetch_price_factor start factor_type=%s code_count=%s",
+            factor_type,
+            len(normalized_codes),
+        )
+
         if factor_type == FactorType.ADJ:
             frame = self.session.base.get_adj_factor(
                 code_list=normalized_codes,
@@ -330,6 +344,7 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
             raise ValueError(f"不支持的 factor_type: {factor_type}")
 
         frame = _ensure_dataframe(frame, f"fetch_price_factor({factor_type})")
+        logger.info("AmazingData fetch_price_factor loaded rows=%s cols=%s", len(frame), len(frame.columns))
         for trade_date, row in frame.iterrows():
             current_date = to_ch_date(trade_date)
             if start_date is not None and current_date < start_date:
@@ -357,6 +372,8 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
         if not normalized_codes:
             return
 
+        logger.info("AmazingData fetch_stock_basic start code_count=%s", len(normalized_codes))
+
         snapshot_date = self.session.get_snapshot_date()
         if start_date is not None and snapshot_date < start_date:
             return
@@ -364,6 +381,7 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
             return
 
         frame = _ensure_dataframe(self.session.info.get_stock_basic(normalized_codes), "get_stock_basic")
+        logger.info("AmazingData fetch_stock_basic loaded rows=%s cols=%s", len(frame), len(frame.columns))
         for record in _frame_to_records(frame):
             market_code = _as_str(_record_get(record, "MARKET_CODE", "market_code", "CODE", "code"))
             if not market_code:
@@ -392,6 +410,13 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
         if not normalized_codes:
             return
 
+        logger.info(
+            "AmazingData fetch_history_stock_status start code_count=%s start_date=%s end_date=%s",
+            len(normalized_codes),
+            start_date,
+            end_date,
+        )
+
         kwargs: dict[str, Any] = {
             "code_list": normalized_codes,
             "local_path": self.config.local_path,
@@ -403,6 +428,11 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
             kwargs["end_date"] = to_yyyymmdd(end_date)
 
         frame = _ensure_dataframe(self.session.info.get_history_stock_status(**kwargs), "get_history_stock_status")
+        logger.info(
+            "AmazingData fetch_history_stock_status loaded rows=%s cols=%s",
+            len(frame),
+            len(frame.columns),
+        )
         for record in _frame_to_records(frame):
             market_code = _as_str(_record_get(record, "MARKET_CODE", "market_code", "CODE", "code"))
             trade_date_value = _record_get(record, "TRADE_DATE", "trade_date")
