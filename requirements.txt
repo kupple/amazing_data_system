@@ -1,25 +1,6 @@
-# AmazingData 数据管理系统依赖
-
-# 核心依赖
-clickhouse-connect>=0.6.0
 pandas>=2.0.0
-
-# API 服务
-fastapi>=0.104.0
-uvicorn>=0.24.0
-pydantic>=2.5.0
-
-# 定时任务
-apscheduler>=3.10.0
-
-# AmazingData SDK (请从官方获取)
-# tgw>=1.0.0
-# amazing-data>=1.0.0
-
-# 测试
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
-httpx>=0.25.0
-
-# 工具
 python-dotenv>=1.0.0
+clickhouse-connect>=0.7.8
+# 以下依赖需从 AmazingData 官方渠道安装
+# AmazingData
+# tgw
