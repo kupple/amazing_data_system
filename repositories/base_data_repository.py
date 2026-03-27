@@ -34,6 +34,7 @@ from data_models import (
     PriceFactorRow,
     SyncTaskLogRow,
     TradeCalendarRow,
+    to_ch_date,
 )
 
 
@@ -120,6 +121,7 @@ class BaseDataRepository:
             table=AD_TRADE_CALENDAR_TABLE,
             columns=self.TRADE_CALENDAR_COLUMNS,
             rows=rows,
+            partition_field="trade_date",
         )
 
     def save_code_info_rows(self, rows: Iterable[CodeInfoRow]) -> int:
@@ -127,6 +129,7 @@ class BaseDataRepository:
             table=AD_CODE_INFO_DAILY_TABLE,
             columns=self.CODE_INFO_COLUMNS,
             rows=rows,
+            partition_field="snapshot_date",
         )
 
     def save_hist_code_daily_rows(self, rows: Iterable[HistCodeDailyRow]) -> int:
@@ -134,6 +137,7 @@ class BaseDataRepository:
             table=AD_HIST_CODE_DAILY_TABLE,
             columns=self.HIST_CODE_DAILY_COLUMNS,
             rows=rows,
+            partition_field="trade_date",
         )
 
     def save_price_factor_rows(self, rows: Iterable[PriceFactorRow]) -> int:
@@ -141,6 +145,7 @@ class BaseDataRepository:
             table=AD_PRICE_FACTOR_TABLE,
             columns=self.PRICE_FACTOR_COLUMNS,
             rows=rows,
+            partition_field="trade_date",
         )
 
     def insert_sync_log(self, row: SyncTaskLogRow) -> None:
@@ -148,6 +153,7 @@ class BaseDataRepository:
             table=AD_SYNC_TASK_LOG_TABLE,
             columns=self.SYNC_TASK_LOG_COLUMNS,
             rows=[row],
+            partition_field="run_date",
         )
 
     def load_calendar_dates(self, query: CalendarQuery) -> list[date]:
@@ -325,25 +331,55 @@ class BaseDataRepository:
         table: str,
         columns: Sequence[str],
         rows: Iterable[object],
+        partition_field: str | None = None,
     ) -> int:
         total = 0
-        batch: list[tuple] = []
+        if partition_field is None:
+            batch: list[tuple] = []
 
+            for row in rows:
+                record = asdict(row)
+                batch.append(tuple(record[column] for column in columns))
+                if len(batch) >= self.insert_batch_size:
+                    self.client.insert_rows(table, columns, batch)
+                    total += len(batch)
+                    logger.info("Inserted %s rows into %s", len(batch), table)
+                    batch = []
+
+            if batch:
+                self.client.insert_rows(table, columns, batch)
+                total += len(batch)
+                logger.info("Inserted %s rows into %s", len(batch), table)
+
+            return total
+
+        partition_batches: dict[str, list[tuple]] = {}
         for row in rows:
             record = asdict(row)
+            partition_key = self._get_partition_key(record.get(partition_field))
+            batch = partition_batches.setdefault(partition_key, [])
             batch.append(tuple(record[column] for column in columns))
             if len(batch) >= self.insert_batch_size:
                 self.client.insert_rows(table, columns, batch)
                 total += len(batch)
-                logger.info("Inserted %s rows into %s", len(batch), table)
-                batch = []
+                logger.info("Inserted %s rows into %s partition=%s", len(batch), table, partition_key)
+                partition_batches[partition_key] = []
 
-        if batch:
+        for partition_key, batch in partition_batches.items():
+            if not batch:
+                continue
             self.client.insert_rows(table, columns, batch)
             total += len(batch)
-            logger.info("Inserted %s rows into %s", len(batch), table)
+            logger.info("Inserted %s rows into %s partition=%s", len(batch), table, partition_key)
 
         return total
+
+    @staticmethod
+    def _get_partition_key(value) -> str:
+        if value is None:
+            return "unknown"
+        dt = to_ch_date(value)
+        return dt.strftime("%Y%m")
 
 
 __all__ = ["BaseDataRepository"]

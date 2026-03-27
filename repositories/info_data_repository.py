@@ -85,6 +85,7 @@ class InfoDataRepository(BaseDataRepository):
             table=AD_STOCK_BASIC_DAILY_TABLE,
             columns=self.STOCK_BASIC_COLUMNS,
             rows=rows,
+            partition_field="snapshot_date",
         )
 
     def save_history_stock_status_rows(self, rows) -> int:
@@ -92,6 +93,7 @@ class InfoDataRepository(BaseDataRepository):
             table=AD_HISTORY_STOCK_STATUS_DAILY_TABLE,
             columns=self.HISTORY_STOCK_STATUS_COLUMNS,
             rows=rows,
+            partition_field="trade_date",
         )
 
     def load_latest_stock_basic_snapshot_date(self, code_list: list[str]):
