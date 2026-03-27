@@ -342,6 +342,7 @@ class BaseDataRepository:
         columns: Sequence[str],
         rows: Iterable[object],
         partition_field: str | None = None,
+        partition_group_size: int | None = None,
     ) -> int:
         total = 0
         if partition_field is None:
@@ -369,11 +370,32 @@ class BaseDataRepository:
             partition_key = self._get_partition_key(record.get(partition_field))
             batch = partition_batches.setdefault(partition_key, [])
             batch.append(tuple(record[column] for column in columns))
-            if len(batch) >= self.insert_batch_size:
+            if partition_group_size is None and len(batch) >= self.insert_batch_size:
                 self.client.insert_rows(table, columns, batch)
                 total += len(batch)
                 logger.info("Inserted %s rows into %s partition=%s", len(batch), table, partition_key)
                 partition_batches[partition_key] = []
+
+        if partition_group_size is not None and partition_group_size > 0:
+            sorted_partition_keys = sorted(partition_batches.keys())
+            for index in range(0, len(sorted_partition_keys), partition_group_size):
+                partition_group = sorted_partition_keys[index : index + partition_group_size]
+                merged_batch: list[tuple] = []
+                for partition_key in partition_group:
+                    merged_batch.extend(partition_batches.get(partition_key, []))
+                if not merged_batch:
+                    continue
+                self.client.insert_rows(table, columns, merged_batch)
+                total += len(merged_batch)
+                logger.info(
+                    "Inserted %s rows into %s partitions=%s..%s partition_count=%s",
+                    len(merged_batch),
+                    table,
+                    partition_group[0],
+                    partition_group[-1],
+                    len(partition_group),
+                )
+            return total
 
         for partition_key, batch in partition_batches.items():
             if not batch:

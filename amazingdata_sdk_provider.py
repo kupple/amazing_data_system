@@ -25,12 +25,6 @@ except Exception:  # pragma: no cover
 from amazingdata_constants import (
     FactorType,
     Market,
-    SNAPSHOT_FIELDS,
-    SNAPSHOT_FUTURE_FIELDS,
-    SNAPSHOT_HKT_FIELDS,
-    SNAPSHOT_INDEX_FIELDS,
-    SNAPSHOT_OPTION_FIELDS,
-    SnapshotKind,
 )
 from base_data import BaseDataSyncProvider
 from data_models import (
@@ -596,7 +590,6 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
             _count_sdk_result_rows(result),
         )
         for code, frame in _iter_code_frames_from_result(result, action="query_snapshot"):
-            snapshot_kind = _detect_snapshot_kind(frame)
             normalized_frame = _prepare_market_time_frame(frame, action="query_snapshot", time_field="trade_time")
             normalized_frame["code"] = code
             for record in _frame_to_records(normalized_frame):
@@ -606,7 +599,6 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
                 yield MarketSnapshotRow(
                     trade_time=trade_time,
                     code=code,
-                    snapshot_kind=snapshot_kind,
                     pre_close=_as_float(_record_get(record, "pre_close", "PRECLOSE", "PRE_CLOSE")),
                     last=_as_float(_record_get(record, "last", "LAST")),
                     open=_as_float(_record_get(record, "open", "OPEN")),
@@ -882,22 +874,6 @@ def _is_sdk_result_empty(obj: Any) -> bool:
     if isinstance(obj, (list, tuple, set)):
         return len(obj) == 0
     return False
-
-
-def _detect_snapshot_kind(frame) -> str:
-    columns = {str(col).strip().lower() for col in frame.columns}
-    if {"total_long_position", "pre_settle", "exercise_price"} & columns:
-        return SnapshotKind.SNAPSHOT_OPTION
-    if {"nominal_price", "ref_price", "bid_price_limit_up", "offer_price_limit_up"} & columns:
-        return SnapshotKind.SNAPSHOT_HKT
-    if {"action_day", "trading_day", "open_interest"} & columns:
-        return SnapshotKind.SNAPSHOT_FUTURE
-    if columns.issubset(set(SNAPSHOT_INDEX_FIELDS)):
-        return SnapshotKind.SNAPSHOT_INDEX
-    if not ({"ask_price1", "bid_price1", "trading_phase_code"} & columns):
-        if {"last", "pre_close", "open", "high", "low", "close", "volume", "amount"} <= columns:
-            return SnapshotKind.SNAPSHOT_INDEX
-    return SnapshotKind.SNAPSHOT
 
 
 def _prepare_market_time_frame(frame, action: str, time_field: str = "trade_time"):

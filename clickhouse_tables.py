@@ -194,7 +194,6 @@ CREATE TABLE IF NOT EXISTS {AD_MARKET_SNAPSHOT_TABLE}
 (
     trade_time DateTime64(3),
     code String,
-    snapshot_kind LowCardinality(String),
     pre_close Nullable(Float64),
     last Nullable(Float64),
     open Nullable(Float64),
@@ -251,7 +250,7 @@ CREATE TABLE IF NOT EXISTS {AD_MARKET_SNAPSHOT_TABLE}
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(toDate(trade_time))
-ORDER BY (snapshot_kind, code, trade_time)
+ORDER BY (code, trade_time)
 """
 
 

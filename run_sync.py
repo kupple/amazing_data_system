@@ -2,23 +2,21 @@
 # -*- coding: utf-8 -*-
 """正式同步入口.
 
-第一版先提供两个面向生产运行的同步任务：
-- `daily_kline`: 日线 K 线同步
-- `daily_snapshot`: 历史快照同步
+当前版本只服务一条主线：
+- 只同步 `EXTRA_STOCK_A`
+- 不做批量调度，直接逐股顺序同步
 
-设计目标：
-- 不做测试回显，专门做“批量同步”
-- 默认先刷新代码池，再按批次同步
-- 充分复用各模块已有的增量、跳过、日志能力
+正式任务：
+- `daily_kline`
+- `market_snapshot`
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-from typing import Iterable, Sequence
 
-from amazingdata_constants import Market, PeriodName, SecurityType
+from amazingdata_constants import PeriodName, SecurityType
 from amazingdata_sdk_provider import AmazingDataSDKConfig, AmazingDataSDKProvider
 from base_data import BaseData, BaseDataCacheMissError
 from clickhouse_client import ClickHouseConfig
@@ -32,12 +30,11 @@ DEFAULT_SYNC_SECURITY_TYPE = SecurityType.EXTRA_STOCK_A
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AmazingData 正式同步入口")
-    parser.add_argument("task", choices=["daily_kline", "daily_snapshot"])
+    parser.add_argument("task", choices=["daily_kline", "market_snapshot"])
     parser.add_argument("--env-file", default=".env", help=argparse.SUPPRESS)
     parser.add_argument("--codes", default="", help="逗号分隔的证券代码列表；不传则自动从代码池获取")
     parser.add_argument("--begin-date", type=int, help="开始日期 YYYYMMDD；默认 20100101")
     parser.add_argument("--end-date", type=int, help="结束日期 YYYYMMDD；默认最新交易日")
-    parser.add_argument("--batch-size", type=int, default=300, help="每批同步的证券数量")
     parser.add_argument("--limit", type=int, default=0, help="调试时限制同步证券数量，0 表示不限制")
     parser.add_argument("--force", action="store_true", help="忽略当天成功跳过逻辑，强制同步")
     parser.add_argument("--log-level", default="INFO")
@@ -66,41 +63,36 @@ def main() -> int:
             begin_date=args.begin_date,
             end_date=args.end_date,
         )
-        code_groups = resolve_code_groups(
-            task=args.task,
+        code_list = resolve_code_list(
             base_data=base_data,
             raw_codes=args.codes,
             limit=args.limit,
         )
 
         logger.info(
-            "sync task=%s group_count=%s total_code_count=%s security_type=%s begin_date=%s end_date=%s batch_size=%s",
+            "sync task=%s total_code_count=%s security_type=%s begin_date=%s end_date=%s mode=per_stock_sequential",
             args.task,
-            len(code_groups),
-            sum(len(codes) for _, codes in code_groups),
+            len(code_list),
             DEFAULT_SYNC_SECURITY_TYPE,
             begin_date,
             end_date,
-            args.batch_size,
         )
 
         if args.task == "daily_kline":
             return run_daily_kline(
                 market_data=market_data,
-                code_groups=code_groups,
+                code_list=code_list,
                 begin_date=begin_date,
                 end_date=end_date,
-                batch_size=args.batch_size,
                 force=args.force,
             )
 
-        if args.task == "daily_snapshot":
-            return run_daily_snapshot(
+        if args.task == "market_snapshot":
+            return run_market_snapshot(
                 market_data=market_data,
-                code_groups=code_groups,
+                code_list=code_list,
                 begin_date=begin_date,
                 end_date=end_date,
-                batch_size=args.batch_size,
                 force=args.force,
             )
 
@@ -121,140 +113,75 @@ def main() -> int:
 
 def run_daily_kline(
     market_data: MarketData,
-    code_groups: Sequence[tuple[str, list[str]]],
+    code_list: list[str],
     begin_date: int,
     end_date: int,
-    batch_size: int,
     force: bool,
 ) -> int:
-    """按批同步日线 K 线.
-
-    日线同步逻辑：
-    1. 先拿最新股票池，避免已退市/新上市代码不同步
-    2. 股票代码先排序，保证批次切分稳定，便于中断后按同样批次恢复
-    3. 外层仍按批次调度，避免一次拉取过多代码
-    4. 但真正同步时按单只股票逐个执行
-    5. 每只股票同步前先查库里最新日期，作为增量起点
-    6. 如果查不到，就从传入 begin_date 开始
-    """
+    """按单只股票顺序同步日线 K 线."""
 
     total_inserted = 0
     logger.info(
-        "daily_kline start total_groups=%s total_codes=%s begin_date=%s end_date=%s",
-        len(code_groups),
-        sum(len(codes) for _, codes in code_groups),
+        "daily_kline start total_codes=%s begin_date=%s end_date=%s",
+        len(code_list),
         begin_date,
         end_date,
     )
-    for group_index, (security_type, code_list) in enumerate(code_groups, start=1):
-        batches = list(iter_batches(code_list, batch_size))
-        total_batches = len(batches)
+    for index, code in enumerate(code_list, start=1):
         logger.info(
-            "daily_kline group=%s/%s security_type=%s total_codes=%s total_batches=%s",
-            group_index,
-            len(code_groups),
-            security_type,
+            "daily_kline progress=%s/%s security_type=%s period=%s",
+            index,
             len(code_list),
-            total_batches,
+            DEFAULT_SYNC_SECURITY_TYPE,
+            PeriodName.DAY,
         )
-        for batch_index, batch_codes in enumerate(batches, start=1):
-            logger.info(
-                "daily_kline group=%s/%s batch=%s/%s security_type=%s code_count=%s period=%s mode=per_stock_incremental",
-                group_index,
-                len(code_groups),
-                batch_index,
-                total_batches,
-                security_type,
-                len(batch_codes),
-                PeriodName.DAY,
-            )
-            logger.info(
-                "daily_kline security_type=%s batch=%s calling sync_kline begin_date=%s end_date=%s",
-                security_type,
-                batch_index,
-                begin_date,
-                end_date,
-            )
-            inserted = market_data.sync_kline(
-                code_list=batch_codes,
-                begin_date=begin_date,
-                end_date=end_date,
-                period=PeriodName.DAY,
-                force=force,
-            )
-            logger.info(
-                "daily_kline security_type=%s batch=%s sync_kline returned inserted_rows=%s",
-                security_type,
-                batch_index,
-                inserted,
-            )
-            total_inserted += int(inserted)
+        inserted = market_data.sync_kline(
+            code_list=[code],
+            begin_date=begin_date,
+            end_date=end_date,
+            period=PeriodName.DAY,
+            force=force,
+        )
+        logger.info("daily_kline progress=%s/%s inserted_rows=%s", index, len(code_list), inserted)
+        total_inserted += int(inserted)
 
     logger.info("daily_kline finished total_inserted=%s", total_inserted)
     return 0
 
 
-def run_daily_snapshot(
+def run_market_snapshot(
     market_data: MarketData,
-    code_groups: Sequence[tuple[str, list[str]]],
+    code_list: list[str],
     begin_date: int,
     end_date: int,
-    batch_size: int,
     force: bool,
 ) -> int:
-    """按批同步历史快照."""
+    """按单只股票顺序同步历史快照."""
 
     total_inserted = 0
     logger.info(
-        "daily_snapshot start total_groups=%s total_codes=%s begin_date=%s end_date=%s",
-        len(code_groups),
-        sum(len(codes) for _, codes in code_groups),
+        "market_snapshot start total_codes=%s begin_date=%s end_date=%s",
+        len(code_list),
         begin_date,
         end_date,
     )
-    for group_index, (security_type, code_list) in enumerate(code_groups, start=1):
-        batches = list(iter_batches(code_list, batch_size))
-        total_batches = len(batches)
+    for index, code in enumerate(code_list, start=1):
         logger.info(
-            "daily_snapshot group=%s/%s security_type=%s total_codes=%s total_batches=%s",
-            group_index,
-            len(code_groups),
-            security_type,
+            "market_snapshot progress=%s/%s security_type=%s",
+            index,
             len(code_list),
-            total_batches,
+            DEFAULT_SYNC_SECURITY_TYPE,
         )
-        for batch_index, batch_codes in enumerate(batches, start=1):
-            logger.info(
-                "daily_snapshot group=%s/%s batch=%s/%s security_type=%s code_count=%s",
-                group_index,
-                len(code_groups),
-                batch_index,
-                total_batches,
-                security_type,
-                len(batch_codes),
-            )
-            logger.info(
-                "daily_snapshot security_type=%s batch=%s calling sync_snapshot begin_date=%s end_date=%s",
-                security_type,
-                batch_index,
-                begin_date,
-                end_date,
-            )
-            inserted = market_data.sync_snapshot(
-                code_list=batch_codes,
-                begin_date=begin_date,
-                end_date=end_date,
-                force=force,
-            )
-            logger.info(
-                "daily_snapshot security_type=%s batch=%s sync_snapshot returned inserted_rows=%s",
-                security_type,
-                batch_index,
-                inserted,
-            )
-            total_inserted += int(inserted)
+        inserted = market_data.sync_snapshot(
+            code_list=[code],
+            begin_date=begin_date,
+            end_date=end_date,
+            force=force,
+        )
+        logger.info("market_snapshot progress=%s/%s inserted_rows=%s", index, len(code_list), inserted)
+        total_inserted += int(inserted)
 
-    logger.info("daily_snapshot finished total_inserted=%s", total_inserted)
+    logger.info("market_snapshot finished total_inserted=%s", total_inserted)
     return 0
 
 
@@ -263,7 +190,7 @@ def resolve_date_window(
     begin_date: int | None,
     end_date: int | None,
 ) -> tuple[int, int]:
-    latest_trade_date = provider.session.get_latest_trade_date(Market.SH)
+    latest_trade_date = provider.session.get_latest_trade_date()
     latest_trade_date_value = int(latest_trade_date.strftime("%Y%m%d"))
     resolved_begin_date = begin_date or DEFAULT_FULL_SYNC_BEGIN_DATE
     resolved_end_date = end_date or latest_trade_date_value
@@ -272,66 +199,33 @@ def resolve_date_window(
     return resolved_begin_date, resolved_end_date
 
 
-def resolve_code_groups(
-    task: str,
+def resolve_code_list(
     base_data: BaseData,
     raw_codes: str,
     limit: int,
-) -> list[tuple[str, list[str]]]:
+) -> list[str]:
     codes = parse_codes(raw_codes)
     if not codes:
-        security_types = resolve_security_types(task=task)
-        groups: list[tuple[str, list[str]]] = []
-        skipped_security_types: list[str] = []
-        for security_type in security_types:
-            try:
-                part_codes = base_data.get_security_universe(security_type=security_type, force=False)
-            except BaseDataCacheMissError as exc:
-                logger.warning(
-                    "security_type=%s 未获取到证券代码，跳过该品种。error=%s",
-                    security_type,
-                    exc,
-                )
-                skipped_security_types.append(security_type)
-                continue
-            logger.info(
-                "code_list source=base_data.get_security_universe security_type=%s raw_count=%s",
-                security_type,
-                len(part_codes),
-            )
-            part_codes = sorted(dict.fromkeys(part_codes))
-            if limit and limit > 0:
-                part_codes = part_codes[:limit]
-            if not part_codes:
-                skipped_security_types.append(security_type)
-                continue
-            logger.info(
-                "resolved code_list security_type=%s count=%s",
-                security_type,
-                len(part_codes),
-            )
-            groups.append((security_type, part_codes))
+        try:
+            codes = base_data.get_stock_universe(security_type=DEFAULT_SYNC_SECURITY_TYPE, force=False)
+        except BaseDataCacheMissError as exc:
+            raise RuntimeError(f"未获取到可同步的证券代码: {exc}") from exc
         logger.info(
-            "code_list grouped security_types=%s group_count=%s skipped_security_types=%s",
-            security_types,
-            len(groups),
-            skipped_security_types,
+            "code_list source=base_data.get_stock_universe security_type=%s raw_count=%s",
+            DEFAULT_SYNC_SECURITY_TYPE,
+            len(codes),
         )
-        if not groups:
-            raise RuntimeError("未获取到可同步的证券代码。")
-        return groups
+    else:
+        logger.info("code_list source=user_input raw_count=%s", len(codes))
 
     codes = sorted(dict.fromkeys(codes))
     if limit and limit > 0:
         codes = codes[:limit]
     if not codes:
         raise RuntimeError("未获取到可同步的证券代码。")
-    logger.info("code_list source=user_input raw_count=%s", len(codes))
-    return [("user_input", codes)]
 
-
-def resolve_security_types(task: str) -> list[str]:
-    return [DEFAULT_SYNC_SECURITY_TYPE]
+    logger.info("resolved code_list count=%s", len(codes))
+    return codes
 
 
 def parse_codes(raw: str) -> list[str]:
@@ -340,11 +234,6 @@ def parse_codes(raw: str) -> list[str]:
         return []
     return [item.strip() for item in text.split(",") if item.strip()]
 
-
-def iter_batches(items: Sequence[str], batch_size: int) -> Iterable[list[str]]:
-    size = max(1, int(batch_size))
-    for index in range(0, len(items), size):
-        yield list(items[index : index + size])
 
 if __name__ == "__main__":
     raise SystemExit(main())

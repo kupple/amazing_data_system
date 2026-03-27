@@ -236,14 +236,10 @@ class MarketKlineRow:
 
 @dataclass(frozen=True)
 class MarketSnapshotRow:
-    """`query_snapshot` 落库行.
-
-    这里使用已知快照结构的并集列，并通过 `snapshot_kind` 区分具体结构。
-    """
+    """`query_snapshot` 落库行."""
 
     trade_time: datetime
     code: str
-    snapshot_kind: str
     pre_close: Optional[float] = None
     last: Optional[float] = None
     open: Optional[float] = None

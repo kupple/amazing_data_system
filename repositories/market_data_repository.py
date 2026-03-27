@@ -9,7 +9,7 @@ try:
 except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
-from amazingdata_constants import KLINE_FIELDS, SNAPSHOT_FIELDS, SNAPSHOT_KIND_TO_FIELDS, SnapshotKind
+from amazingdata_constants import KLINE_FIELDS, SNAPSHOT_FIELDS
 from clickhouse_tables import (
     AD_MARKET_KLINE_DAILY_TABLE,
     AD_MARKET_SNAPSHOT_TABLE,
@@ -36,7 +36,6 @@ class MarketDataRepository(BaseDataRepository):
     MARKET_SNAPSHOT_COLUMNS = (
         "trade_time",
         "code",
-        "snapshot_kind",
         "pre_close",
         "last",
         "open",
@@ -103,6 +102,7 @@ class MarketDataRepository(BaseDataRepository):
             columns=self.MARKET_KLINE_COLUMNS,
             rows=rows,
             partition_field="trade_time",
+            partition_group_size=12,
         )
 
     def save_market_snapshot_rows(self, rows) -> int:
@@ -111,6 +111,7 @@ class MarketDataRepository(BaseDataRepository):
             columns=self.MARKET_SNAPSHOT_COLUMNS,
             rows=rows,
             partition_field="trade_time",
+            partition_group_size=12,
         )
 
     def load_latest_kline_trade_date(self, code_list: list[str], period: str):
@@ -232,7 +233,6 @@ class MarketDataRepository(BaseDataRepository):
         SELECT
             code,
             trade_time,
-            any(snapshot_kind) AS snapshot_kind,
             any(pre_close) AS pre_close,
             any(last) AS last,
             any(open) AS open,
@@ -329,16 +329,7 @@ def _build_snapshot_dict(frame, code_list):
         subset = frame[frame["code"] == code].copy()
         if subset.empty:
             continue
-        snapshot_kind = (
-            subset["snapshot_kind"].iloc[0]
-            if "snapshot_kind" in subset.columns and not subset["snapshot_kind"].isna().all()
-            else SnapshotKind.SNAPSHOT
-        )
-        ordered_columns = [
-            field
-            for field in SNAPSHOT_KIND_TO_FIELDS.get(snapshot_kind, SNAPSHOT_FIELDS)
-            if field != "trade_time"
-        ]
+        ordered_columns = [field for field in SNAPSHOT_FIELDS if field != "trade_time"]
         subset = subset.set_index("trade_time")
         result[code] = subset.loc[:, [col for col in ordered_columns if col in subset.columns]]
     return result
