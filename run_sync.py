@@ -147,6 +147,7 @@ def run_daily_kline(
             batch_codes[-1],
             PeriodName.DAY,
         )
+        logger.info("daily_kline batch=%s codes=%s", batch_index, batch_codes)
         inserted = market_data.sync_kline(
             code_list=batch_codes,
             begin_date=begin_date,
@@ -179,6 +180,7 @@ def run_daily_snapshot(
             batch_codes[0],
             batch_codes[-1],
         )
+        logger.info("daily_snapshot batch=%s codes=%s", batch_index, batch_codes)
         inserted = market_data.sync_snapshot(
             code_list=batch_codes,
             begin_date=begin_date,
@@ -216,11 +218,19 @@ def resolve_code_list(
         # 先刷新一次代码池，再从 ClickHouse 获取最新代码列表。
         base_data.sync_code_info(security_type=security_type, force=False)
         codes = base_data.get_code_list(security_type=security_type)
+        logger.info(
+            "code_list source=clickhouse_latest_code_pool security_type=%s raw_count=%s",
+            security_type,
+            len(codes),
+        )
+    else:
+        logger.info("code_list source=user_input raw_count=%s", len(codes))
     codes = sorted(dict.fromkeys(codes))
     if limit and limit > 0:
         codes = codes[:limit]
     if not codes:
         raise RuntimeError("未获取到可同步的证券代码。")
+    logger.info("resolved code_list count=%s codes=%s", len(codes), codes)
     return codes
 
 
