@@ -511,31 +511,25 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
             type(result).__name__,
             _count_sdk_result_rows(result),
         )
-        for record in _iter_records_from_sdk_result(
-            result,
-            action="query_kline",
-            injected_code_fields=("code", "CODE", "market_code", "MARKET_CODE"),
-            index_field="trade_time",
-        ):
-            code = _as_str(_record_get(record, "code", "CODE", "market_code", "MARKET_CODE"))
-            trade_time_value = _record_get(record, "trade_time", "TRADE_TIME")
-            if not code or trade_time_value is None:
-                continue
-            trade_time = _to_datetime(trade_time_value)
-            if trade_time is None:
-                continue
-            yield MarketKlineRow(
-                trade_time=trade_time,
-                trade_date=trade_time.date(),
-                code=code,
-                period=str(period),
-                open=_as_float(_record_get(record, "open", "OPEN")),
-                high=_as_float(_record_get(record, "high", "HIGH")),
-                low=_as_float(_record_get(record, "low", "LOW")),
-                close=_as_float(_record_get(record, "close", "CLOSE")),
-                volume=_as_float(_record_get(record, "volume", "VOLUME")),
-                amount=_as_float(_record_get(record, "amount", "AMOUNT")),
-            )
+        for code, frame in _iter_code_frames_from_result(result, action="query_kline"):
+            normalized_frame = _prepare_market_time_frame(frame, action="query_kline", time_field="trade_time")
+            normalized_frame["code"] = code
+            for record in _frame_to_records(normalized_frame):
+                trade_time = _to_datetime(_record_get(record, "trade_time", "TRADE_TIME"))
+                if trade_time is None:
+                    continue
+                yield MarketKlineRow(
+                    trade_time=trade_time,
+                    trade_date=trade_time.date(),
+                    code=code,
+                    period=str(period),
+                    open=_as_float(_record_get(record, "open", "OPEN")),
+                    high=_as_float(_record_get(record, "high", "HIGH")),
+                    low=_as_float(_record_get(record, "low", "LOW")),
+                    close=_as_float(_record_get(record, "close", "CLOSE")),
+                    volume=_as_float(_record_get(record, "volume", "VOLUME")),
+                    amount=_as_float(_record_get(record, "amount", "AMOUNT")),
+                )
 
     def _query_kline_with_variants(
         self,
@@ -598,23 +592,16 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
         )
         for code, frame in _iter_code_frames_from_result(result, action="query_snapshot"):
             snapshot_kind = _detect_snapshot_kind(frame)
-            for record in _iter_records_from_sdk_result(
-                {code: frame},
-                action="query_snapshot",
-                injected_code_fields=("code", "CODE", "market_code", "MARKET_CODE"),
-                index_field="trade_time",
-            ):
-                market_code = _as_str(_record_get(record, "code", "CODE", "market_code", "MARKET_CODE"))
-                trade_time_value = _record_get(record, "trade_time", "TRADE_TIME")
-                if not market_code or trade_time_value is None:
-                    continue
-                trade_time = _to_datetime(trade_time_value)
+            normalized_frame = _prepare_market_time_frame(frame, action="query_snapshot", time_field="trade_time")
+            normalized_frame["code"] = code
+            for record in _frame_to_records(normalized_frame):
+                trade_time = _to_datetime(_record_get(record, "trade_time", "TRADE_TIME"))
                 if trade_time is None:
                     continue
                 yield MarketSnapshotRow(
                     trade_time=trade_time,
                     trade_date=trade_time.date(),
-                    code=market_code,
+                    code=code,
                     snapshot_kind=snapshot_kind,
                     pre_close=_as_float(_record_get(record, "pre_close", "PRECLOSE", "PRE_CLOSE")),
                     last=_as_float(_record_get(record, "last", "LAST")),
@@ -907,6 +894,29 @@ def _detect_snapshot_kind(frame) -> str:
         if {"last", "pre_close", "open", "high", "low", "close", "volume", "amount"} <= columns:
             return SnapshotKind.SNAPSHOT_INDEX
     return SnapshotKind.SNAPSHOT
+
+
+def _prepare_market_time_frame(frame, action: str, time_field: str = "trade_time"):
+    if pd is None:  # pragma: no cover
+        raise RuntimeError("未安装 pandas，无法处理 SDK 返回的 DataFrame。")
+
+    normalized = frame.copy()
+    if time_field in normalized.columns:
+        return normalized
+    if time_field.upper() in normalized.columns:
+        normalized[time_field] = normalized[time_field.upper()]
+        return normalized
+
+    if not isinstance(normalized.index, pd.RangeIndex):
+        normalized[time_field] = normalized.index
+        return normalized
+
+    for candidate in ("trade_date", "TRADE_DATE", "date", "DATE", "datetime", "DATETIME"):
+        if candidate in normalized.columns:
+            normalized[time_field] = normalized[candidate]
+            return normalized
+
+    raise TypeError(f"{action} DataFrame 缺少可识别的时间列，且 index 不是时间索引。")
 
 
 def _record_get(record: dict[str, Any], *candidates: str) -> Any:
