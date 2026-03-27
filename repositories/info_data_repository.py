@@ -18,8 +18,8 @@ from amazingdata_constants import (
     STOCK_BASIC_FIELDS,
 )
 from clickhouse_tables import (
-    AD_HISTORY_STOCK_STATUS_DAILY_TABLE,
-    AD_STOCK_BASIC_DAILY_TABLE,
+    AD_HISTORY_STOCK_STATUS_TABLE,
+    AD_STOCK_BASIC_TABLE,
     iter_info_data_table_ddls,
 )
 from data_models import (
@@ -74,7 +74,7 @@ class InfoDataRepository(BaseDataRepository):
 
     def save_stock_basic_rows(self, rows) -> int:
         return self._insert_dataclass_rows_in_batches(
-            table=AD_STOCK_BASIC_DAILY_TABLE,
+            table=AD_STOCK_BASIC_TABLE,
             columns=self.STOCK_BASIC_COLUMNS,
             rows=rows,
             partition_field="snapshot_date",
@@ -82,7 +82,7 @@ class InfoDataRepository(BaseDataRepository):
 
     def save_history_stock_status_rows(self, rows) -> int:
         return self._insert_dataclass_rows_in_batches(
-            table=AD_HISTORY_STOCK_STATUS_DAILY_TABLE,
+            table=AD_HISTORY_STOCK_STATUS_TABLE,
             columns=self.HISTORY_STOCK_STATUS_COLUMNS,
             rows=rows,
             partition_field="trade_date",
@@ -94,7 +94,7 @@ class InfoDataRepository(BaseDataRepository):
 
         sql = f"""
         SELECT market_code, max(snapshot_date) AS latest_snapshot_date
-        FROM {AD_STOCK_BASIC_DAILY_TABLE}
+        FROM {AD_STOCK_BASIC_TABLE}
         WHERE market_code IN {{code_list:Array(String)}}
         GROUP BY market_code
         ORDER BY market_code
@@ -113,7 +113,7 @@ class InfoDataRepository(BaseDataRepository):
 
         sql = f"""
         SELECT market_code, max(trade_date) AS latest_trade_date
-        FROM {AD_HISTORY_STOCK_STATUS_DAILY_TABLE}
+        FROM {AD_HISTORY_STOCK_STATUS_TABLE}
         WHERE market_code IN {{code_list:Array(String)}}
         GROUP BY market_code
         ORDER BY market_code
@@ -149,7 +149,7 @@ class InfoDataRepository(BaseDataRepository):
             any(listplate_name) AS listplate_name,
             any(comp_sname_eng) AS comp_sname_eng,
             any(is_listed) AS is_listed
-        FROM {AD_STOCK_BASIC_DAILY_TABLE}
+        FROM {AD_STOCK_BASIC_TABLE}
         WHERE snapshot_date = {{snapshot_date:Date}}
           AND market_code IN {{code_list:Array(String)}}
         GROUP BY market_code
@@ -191,7 +191,7 @@ class InfoDataRepository(BaseDataRepository):
             any(is_susp_sec) AS is_susp_sec,
             any(is_wd_sec) AS is_wd_sec,
             any(is_xr_sec) AS is_xr_sec
-        FROM {AD_HISTORY_STOCK_STATUS_DAILY_TABLE}
+        FROM {AD_HISTORY_STOCK_STATUS_TABLE}
         WHERE market_code IN {{code_list:Array(String)}}
         """
         parameters = {

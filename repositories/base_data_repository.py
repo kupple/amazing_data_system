@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover
 from amazingdata_constants import SyncStatus
 from clickhouse_client import ClickHouseConnection
 from clickhouse_tables import (
-    AD_CODE_INFO_DAILY_TABLE,
+    AD_CODE_INFO_TABLE,
     AD_HIST_CODE_DAILY_TABLE,
     AD_PRICE_FACTOR_TABLE,
     AD_SYNC_CHECKPOINT_TABLE,
@@ -57,7 +57,6 @@ class BaseDataRepository:
         "trade_date",
     )
     CODE_INFO_COLUMNS = (
-        "snapshot_date",
         "security_type",
         "code",
         "symbol",
@@ -121,10 +120,9 @@ class BaseDataRepository:
 
     def save_code_info_rows(self, rows: Iterable[CodeInfoRow]) -> int:
         return self._insert_dataclass_rows_in_batches(
-            table=AD_CODE_INFO_DAILY_TABLE,
+            table=AD_CODE_INFO_TABLE,
             columns=self.CODE_INFO_COLUMNS,
             rows=rows,
-            partition_field="snapshot_date",
         )
 
     def save_hist_code_daily_rows(self, rows: Iterable[HistCodeDailyRow]) -> int:
@@ -191,14 +189,6 @@ class BaseDataRepository:
         WHERE market = {{market:String}}
         """
         return self.client.query_value(sql, {"market": market})
-
-    def load_latest_code_info_snapshot_date(self, security_type: str):
-        sql = f"""
-        SELECT max(snapshot_date)
-        FROM {AD_CODE_INFO_DAILY_TABLE}
-        WHERE security_type = {{security_type:String}}
-        """
-        return self.client.query_value(sql, {"security_type": security_type})
 
     def load_latest_hist_code_trade_date(self, security_type: str):
         sql = f"""
@@ -276,19 +266,6 @@ class BaseDataRepository:
         if pd is None:  # pragma: no cover
             raise RuntimeError("未安装 pandas，无法返回 DataFrame。")
 
-        snapshot_date = query.snapshot_date or self.load_latest_code_info_snapshot_date(query.security_type)
-        if snapshot_date is None:
-            return pd.DataFrame(
-                columns=[
-                    "symbol",
-                    "security_status",
-                    "pre_close",
-                    "high_limited",
-                    "low_limited",
-                    "price_tick",
-                ]
-            )
-
         sql = f"""
         SELECT
             code,
@@ -298,15 +275,14 @@ class BaseDataRepository:
             any(high_limited) AS high_limited,
             any(low_limited) AS low_limited,
             any(price_tick) AS price_tick
-        FROM {AD_CODE_INFO_DAILY_TABLE}
+        FROM {AD_CODE_INFO_TABLE}
         WHERE security_type = {{security_type:String}}
-          AND snapshot_date = {{snapshot_date:Date}}
         GROUP BY code
         ORDER BY code
         """
         frame = self.client.query_df(
             sql,
-            {"security_type": query.security_type, "snapshot_date": snapshot_date},
+            {"security_type": query.security_type},
         )
         if frame.empty:
             return frame

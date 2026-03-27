@@ -74,7 +74,6 @@ class CodeInfoQuery:
     """证券基础信息查询参数."""
 
     security_type: str
-    snapshot_date: Optional[date] = None
 
 
 @dataclass(frozen=True)
@@ -150,7 +149,6 @@ class TradeCalendarRow:
 class CodeInfoRow:
     """证券基础信息落库行."""
 
-    snapshot_date: date
     security_type: str
     code: str
     symbol: Optional[str] = None

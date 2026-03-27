@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover
 from amazingdata_constants import FactorType, Market, SecurityType, SyncStatus
 from clickhouse_client import ClickHouseConfig, create_clickhouse_client
 from clickhouse_tables import (
-    AD_CODE_INFO_DAILY_TABLE,
+    AD_CODE_INFO_TABLE,
     AD_HIST_CODE_DAILY_TABLE,
     AD_PRICE_FACTOR_TABLE,
     AD_TRADE_CALENDAR_TABLE,
@@ -297,7 +297,7 @@ class BaseData:
             self.sync_code_info(security_type=security_type, force=True)
             code_list = self.get_code_list_from_db(security_type=security_type)
 
-        latest_snapshot_date = self.repository.load_latest_code_info_snapshot_date(security_type)
+        latest_checkpoint_date = self.repository.load_sync_checkpoint_date("get_code_info", scope_key)
         finished_at = utcnow()
 
         if not code_list:
@@ -307,9 +307,9 @@ class BaseData:
                 scope_key=scope_key,
                 run_date=run_date,
                 status=SyncStatus.FAILED,
-                target_table=AD_CODE_INFO_DAILY_TABLE,
-                start_date=latest_snapshot_date,
-                end_date=latest_snapshot_date,
+                target_table=AD_CODE_INFO_TABLE,
+                start_date=latest_checkpoint_date,
+                end_date=latest_checkpoint_date,
                 row_count=0,
                 message=message,
                 started_at=started_at,
@@ -322,21 +322,21 @@ class BaseData:
             scope_key=scope_key,
             run_date=run_date,
             status=SyncStatus.SUCCESS,
-            target_table=AD_CODE_INFO_DAILY_TABLE,
-            start_date=latest_snapshot_date,
-            end_date=latest_snapshot_date,
+            target_table=AD_CODE_INFO_TABLE,
+            start_date=latest_checkpoint_date,
+            end_date=latest_checkpoint_date,
             row_count=len(code_list),
             message=(
                 f"get_code_list 构建完成 security_type={security_type} "
-                f"snapshot_date={latest_snapshot_date} code_count={len(code_list)}"
+                f"checkpoint_date={latest_checkpoint_date} code_count={len(code_list)}"
             ),
             started_at=started_at,
             finished_at=finished_at,
         )
         logger.info(
-            "get_code_list build success security_type=%s snapshot_date=%s code_count=%s",
+            "get_code_list build success security_type=%s checkpoint_date=%s code_count=%s",
             security_type,
-            latest_snapshot_date,
+            latest_checkpoint_date,
             len(code_list),
         )
         return code_list
@@ -434,11 +434,11 @@ class BaseData:
         return self._run_sync_job(
             task_name="get_code_info",
             scope_key=f"security_type={security_type}",
-            target_table=AD_CODE_INFO_DAILY_TABLE,
+            target_table=AD_CODE_INFO_TABLE,
             latest_date=latest_date,
             fetch_rows=lambda start_date: self._provider_fetch_code_info(security_type, start_date),
             save_rows=self.repository.save_code_info_rows,
-            row_date_getter=lambda row: row.snapshot_date,
+            row_date_getter=lambda _row: datetime.now().date(),
             force=force,
         )
 

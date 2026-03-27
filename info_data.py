@@ -17,7 +17,7 @@ from typing import Callable, Iterable, Optional, Protocol, Sequence
 from amazingdata_constants import HISTORY_STOCK_STATUS_FIELDS, STOCK_BASIC_FIELDS, SyncStatus
 from base_data import BaseDataCacheMissError, BaseDataParameterError
 from clickhouse_client import ClickHouseConfig, create_clickhouse_client
-from clickhouse_tables import AD_HISTORY_STOCK_STATUS_DAILY_TABLE, AD_STOCK_BASIC_DAILY_TABLE
+from clickhouse_tables import AD_HISTORY_STOCK_STATUS_TABLE, AD_STOCK_BASIC_TABLE
 from data_models import (
     HistoryStockStatusQuery,
     HistoryStockStatusRow,
@@ -152,7 +152,7 @@ class InfoData:
         return frame.loc[:, list(HISTORY_STOCK_STATUS_FIELDS)]
 
     def sync_stock_basic(self, code_list: Sequence[str], force: bool = False) -> int:
-        """同步 `ad_stock_basic_daily`."""
+        """同步 `ad_stock_basic`."""
 
         normalized_codes = normalize_code_list(code_list)
         if not normalized_codes:
@@ -163,7 +163,7 @@ class InfoData:
         return self._run_sync_job(
             task_name="get_stock_basic",
             scope_key=scope_key,
-            target_table=AD_STOCK_BASIC_DAILY_TABLE,
+            target_table=AD_STOCK_BASIC_TABLE,
             latest_date=latest_date,
             fetch_rows=lambda start_date: self._provider_fetch_stock_basic(normalized_codes, start_date),
             save_rows=self.repository.save_stock_basic_rows,
@@ -178,7 +178,7 @@ class InfoData:
         end_date: Optional[date | int | str] = None,
         force: bool = False,
     ) -> int:
-        """同步 `ad_history_stock_status_daily`."""
+        """同步 `ad_history_stock_status`."""
 
         normalized_codes = normalize_code_list(code_list)
         if not normalized_codes:
@@ -199,7 +199,7 @@ class InfoData:
         return self._run_sync_job(
             task_name="get_history_stock_status",
             scope_key=scope_key,
-            target_table=AD_HISTORY_STOCK_STATUS_DAILY_TABLE,
+            target_table=AD_HISTORY_STOCK_STATUS_TABLE,
             latest_date=latest_date,
             fetch_rows=lambda _latest_date: self._provider_fetch_history_stock_status(
                 normalized_codes,

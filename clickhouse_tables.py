@@ -20,13 +20,13 @@ from __future__ import annotations
 
 
 AD_TRADE_CALENDAR_TABLE = "ad_trade_calendar"
-AD_CODE_INFO_DAILY_TABLE = "ad_code_info_daily"
+AD_CODE_INFO_TABLE = "ad_code_info"
 AD_HIST_CODE_DAILY_TABLE = "ad_hist_code_daily"
 AD_PRICE_FACTOR_TABLE = "ad_price_factor"
 AD_SYNC_TASK_LOG_TABLE = "ad_sync_task_log"
 AD_SYNC_CHECKPOINT_TABLE = "ad_sync_checkpoint"
-AD_STOCK_BASIC_DAILY_TABLE = "ad_stock_basic_daily"
-AD_HISTORY_STOCK_STATUS_DAILY_TABLE = "ad_history_stock_status_daily"
+AD_STOCK_BASIC_TABLE = "ad_stock_basic"
+AD_HISTORY_STOCK_STATUS_TABLE = "ad_history_stock_status"
 AD_MARKET_KLINE_DAILY_TABLE = "ad_market_kline_daily"
 AD_MARKET_SNAPSHOT_TABLE = "ad_market_snapshot"
 
@@ -44,10 +44,9 @@ ORDER BY (market, trade_date)
 """
 
 
-CREATE_AD_CODE_INFO_DAILY_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {AD_CODE_INFO_DAILY_TABLE}
+CREATE_AD_CODE_INFO_TABLE = f"""
+CREATE TABLE IF NOT EXISTS {AD_CODE_INFO_TABLE}
 (
-    snapshot_date Date,
     security_type LowCardinality(String),
     code String,
     symbol Nullable(String),
@@ -58,8 +57,7 @@ CREATE TABLE IF NOT EXISTS {AD_CODE_INFO_DAILY_TABLE}
     price_tick Nullable(Float64)
 )
 ENGINE = MergeTree
-PARTITION BY toYYYYMM(snapshot_date)
-ORDER BY (security_type, snapshot_date, code)
+ORDER BY (security_type, code)
 """
 
 
@@ -130,8 +128,8 @@ ORDER BY (task_name, scope_key, run_date)
 """
 
 
-CREATE_AD_STOCK_BASIC_DAILY_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {AD_STOCK_BASIC_DAILY_TABLE}
+CREATE_AD_STOCK_BASIC_TABLE = f"""
+CREATE TABLE IF NOT EXISTS {AD_STOCK_BASIC_TABLE}
 (
     snapshot_date Date,
     market_code String,
@@ -151,8 +149,8 @@ ORDER BY (snapshot_date, market_code)
 """
 
 
-CREATE_AD_HISTORY_STOCK_STATUS_DAILY_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {AD_HISTORY_STOCK_STATUS_DAILY_TABLE}
+CREATE_AD_HISTORY_STOCK_STATUS_TABLE = f"""
+CREATE TABLE IF NOT EXISTS {AD_HISTORY_STOCK_STATUS_TABLE}
 (
     trade_date Date,
     market_code String,
@@ -259,7 +257,7 @@ ORDER BY (snapshot_kind, code, trade_time)
 
 BASE_DATA_TABLE_DDLS = (
     CREATE_AD_TRADE_CALENDAR_TABLE,
-    CREATE_AD_CODE_INFO_DAILY_TABLE,
+    CREATE_AD_CODE_INFO_TABLE,
     CREATE_AD_HIST_CODE_DAILY_TABLE,
     CREATE_AD_PRICE_FACTOR_TABLE,
     CREATE_AD_SYNC_TASK_LOG_TABLE,
@@ -267,8 +265,8 @@ BASE_DATA_TABLE_DDLS = (
 )
 
 INFO_DATA_TABLE_DDLS = (
-    CREATE_AD_STOCK_BASIC_DAILY_TABLE,
-    CREATE_AD_HISTORY_STOCK_STATUS_DAILY_TABLE,
+    CREATE_AD_STOCK_BASIC_TABLE,
+    CREATE_AD_HISTORY_STOCK_STATUS_TABLE,
 )
 
 MARKET_DATA_TABLE_DDLS = (
@@ -296,14 +294,14 @@ def iter_market_data_table_ddls() -> tuple[str, ...]:
 
 
 __all__ = [
-    "AD_CODE_INFO_DAILY_TABLE",
-    "AD_HISTORY_STOCK_STATUS_DAILY_TABLE",
+    "AD_CODE_INFO_TABLE",
+    "AD_HISTORY_STOCK_STATUS_TABLE",
     "AD_HIST_CODE_DAILY_TABLE",
     "AD_MARKET_KLINE_DAILY_TABLE",
     "AD_MARKET_SNAPSHOT_TABLE",
     "AD_PRICE_FACTOR_TABLE",
     "AD_SYNC_CHECKPOINT_TABLE",
-    "AD_STOCK_BASIC_DAILY_TABLE",
+    "AD_STOCK_BASIC_TABLE",
     "AD_SYNC_TASK_LOG_TABLE",
     "AD_TRADE_CALENDAR_TABLE",
     "BASE_DATA_TABLE_DDLS",

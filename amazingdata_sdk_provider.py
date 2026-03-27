@@ -301,18 +301,12 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
         logger.info("AmazingData fetch_code_info start security_type=%s", security_type)
         frame = _ensure_dataframe(self.session.base.get_code_info(security_type=security_type), "get_code_info")
         logger.info("AmazingData fetch_code_info loaded rows=%s cols=%s", len(frame), len(frame.columns))
-        snapshot_date = self.session.get_snapshot_date()
-        if start_date is not None and snapshot_date < start_date:
-            return
-        if end_date is not None and snapshot_date > end_date:
-            return
 
         for code, row in frame.iterrows():
             market_code = str(code).strip()
             if not market_code:
                 continue
             yield CodeInfoRow(
-                snapshot_date=snapshot_date,
                 security_type=security_type,
                 code=market_code,
                 symbol=_as_str(_series_get(row, "symbol", "SYMBOL")),
