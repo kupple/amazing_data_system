@@ -224,6 +224,7 @@ class MarketData:
         end_time: Optional[int] = None,
         force: bool = False,
     ) -> int:
+        print("[debug] sync_kline step=enter", flush=True)
         logger.info(
             "sync_kline enter raw_code_count=%s raw_begin_date=%s raw_end_date=%s raw_period=%s",
             len(code_list),
@@ -231,14 +232,20 @@ class MarketData:
             end_date,
             period,
         )
+        print("[debug] sync_kline step=normalize_code_list", flush=True)
         normalized_codes = normalize_code_list(code_list)
         if not normalized_codes:
             raise BaseDataParameterError("code_list 不能为空。")
 
+        print("[debug] sync_kline step=to_ch_date_begin", flush=True)
         begin = to_ch_date(begin_date)
+        print("[debug] sync_kline step=to_ch_date_end", flush=True)
         end = to_ch_date(end_date)
+        print("[debug] sync_kline step=resolve_period_token", flush=True)
         period_token = self._resolve_period_token(period)
+        print("[debug] sync_kline step=validate_date_range", flush=True)
         self._validate_date_range(begin, end)
+        print("[debug] sync_kline step=prepared", flush=True)
         logger.info(
             "sync_kline prepared code_count=%s begin_date=%s end_date=%s raw_period=%s resolved_period=%s",
             len(normalized_codes),
