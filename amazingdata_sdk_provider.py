@@ -512,7 +512,19 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
             _count_sdk_result_rows(result),
         )
         for code, frame in _iter_code_frames_from_result(result, action="query_kline"):
-            normalized_frame = _prepare_market_time_frame(frame, action="query_kline", time_field="trade_time")
+            try:
+                normalized_frame = _prepare_market_time_frame(frame, action="query_kline", time_field="trade_time")
+            except Exception:
+                logger.exception(
+                    "query_kline 原始结构无法识别 code=%s columns=%s index_type=%s index_name=%s index_preview=%s head=%s",
+                    code,
+                    list(frame.columns),
+                    type(frame.index).__name__,
+                    getattr(frame.index, "name", None),
+                    list(frame.index[:3]) if len(frame.index) >= 3 else list(frame.index),
+                    frame.head(3).to_dict("records") if pd is not None else "<pandas unavailable>",
+                )
+                raise
             normalized_frame["code"] = code
             for record in _frame_to_records(normalized_frame):
                 trade_time = _to_datetime(_record_get(record, "trade_time", "TRADE_TIME"))
