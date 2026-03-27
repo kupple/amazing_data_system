@@ -166,22 +166,21 @@ def run_daily_kline(
         )
         for batch_index, batch_codes in enumerate(batches, start=1):
             logger.info(
-                "daily_kline group=%s/%s batch=%s/%s security_type=%s code_count=%s first_code=%s last_code=%s period=%s",
+                "daily_kline group=%s/%s batch=%s/%s security_type=%s code_count=%s period=%s",
                 group_index,
                 len(code_groups),
                 batch_index,
                 total_batches,
                 security_type,
                 len(batch_codes),
-                batch_codes[0],
-                batch_codes[-1],
                 PeriodName.DAY,
             )
             logger.info(
-                "daily_kline security_type=%s batch=%s codes=%s",
+                "daily_kline security_type=%s batch=%s calling sync_kline begin_date=%s end_date=%s",
                 security_type,
                 batch_index,
-                batch_codes,
+                begin_date,
+                end_date,
             )
             inserted = market_data.sync_kline(
                 code_list=batch_codes,
@@ -189,6 +188,12 @@ def run_daily_kline(
                 end_date=end_date,
                 period=PeriodName.DAY,
                 force=force,
+            )
+            logger.info(
+                "daily_kline security_type=%s batch=%s sync_kline returned inserted_rows=%s",
+                security_type,
+                batch_index,
+                inserted,
             )
             total_inserted += int(inserted)
 
@@ -227,27 +232,32 @@ def run_daily_snapshot(
         )
         for batch_index, batch_codes in enumerate(batches, start=1):
             logger.info(
-                "daily_snapshot group=%s/%s batch=%s/%s security_type=%s code_count=%s first_code=%s last_code=%s",
+                "daily_snapshot group=%s/%s batch=%s/%s security_type=%s code_count=%s",
                 group_index,
                 len(code_groups),
                 batch_index,
                 total_batches,
                 security_type,
                 len(batch_codes),
-                batch_codes[0],
-                batch_codes[-1],
             )
             logger.info(
-                "daily_snapshot security_type=%s batch=%s codes=%s",
+                "daily_snapshot security_type=%s batch=%s calling sync_snapshot begin_date=%s end_date=%s",
                 security_type,
                 batch_index,
-                batch_codes,
+                begin_date,
+                end_date,
             )
             inserted = market_data.sync_snapshot(
                 code_list=batch_codes,
                 begin_date=begin_date,
                 end_date=end_date,
                 force=force,
+            )
+            logger.info(
+                "daily_snapshot security_type=%s batch=%s sync_snapshot returned inserted_rows=%s",
+                security_type,
+                batch_index,
+                inserted,
             )
             total_inserted += int(inserted)
 
@@ -304,10 +314,9 @@ def resolve_code_groups(
                 skipped_security_types.append(security_type)
                 continue
             logger.info(
-                "resolved code_list security_type=%s count=%s preview=%s",
+                "resolved code_list security_type=%s count=%s",
                 security_type,
                 len(part_codes),
-                preview_codes(part_codes),
             )
             groups.append((security_type, part_codes))
         logger.info(
@@ -325,7 +334,7 @@ def resolve_code_groups(
         codes = codes[:limit]
     if not codes:
         raise RuntimeError("未获取到可同步的证券代码。")
-    logger.info("code_list source=user_input raw_count=%s preview=%s", len(codes), preview_codes(codes))
+    logger.info("code_list source=user_input raw_count=%s", len(codes))
     return [("user_input", codes)]
 
 
@@ -347,13 +356,6 @@ def iter_batches(items: Sequence[str], batch_size: int) -> Iterable[list[str]]:
     size = max(1, int(batch_size))
     for index in range(0, len(items), size):
         yield list(items[index : index + size])
-
-
-def preview_codes(codes: Sequence[str], limit: int = 10) -> list[str]:
-    if len(codes) <= limit:
-        return list(codes)
-    return list(codes[:limit]) + ["..."]
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
