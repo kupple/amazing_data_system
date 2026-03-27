@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -138,17 +139,38 @@ class AmazingDataSDKSession:
 
     def get_calendar_dates(self, market: str = Market.SH) -> list:
         self.ensure_connected()
-        cache_key = str(market)
+        # 当前 AmazingData SDK 版本直接 `get_calendar()` 即可，`market` 参数在这里不再向下透传。
+        cache_key = "default"
         if cache_key not in self._calendar_cache:
-            dates = self.base.get_calendar(data_type="str", market=market)
-            self._calendar_cache[cache_key] = list(dates or [])
+            dates = self._load_calendar_dates()
+            self._calendar_cache[cache_key] = dates
         return self._calendar_cache[cache_key]
 
     def get_latest_trade_date(self, market: str = Market.SH):
         dates = self.get_calendar_dates(market=market)
         if not dates:
-            return None
+            fallback = date.today()
+            logger.warning(
+                "AmazingData get_calendar 不可用，latest_trade_date 临时回退为 today=%s",
+                fallback,
+            )
+            return fallback
         return to_ch_date(dates[-1])
+
+    def _load_calendar_dates(self) -> list:
+        try:
+            result = self.base.get_calendar()
+        except Exception as exc:
+            logger.warning("AmazingData get_calendar() 调用失败: %s", exc)
+            return []
+
+        normalized = _normalize_calendar_result(result)
+        if normalized:
+            logger.info("AmazingData get_calendar() success count=%s", len(normalized))
+            return normalized
+
+        logger.warning("AmazingData get_calendar() 返回空结果")
+        return []
 
     def close(self) -> None:
         if not self._connected or self._ad is None:
@@ -237,16 +259,36 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
         if actual_start > actual_end:
             return
 
-        all_dates = [to_ch_date(item) for item in self.session.get_calendar_dates(Market.SH)]
-        for trade_date in all_dates:
-            if trade_date < actual_start or trade_date > actual_end:
-                continue
-            code_list = self.session.base.get_hist_code_list(
-                security_type=security_type,
-                start_date=to_yyyymmdd(trade_date),
-                end_date=to_yyyymmdd(trade_date),
-                local_path=self.config.local_path,
+        calendar_dates = [to_ch_date(item) for item in self.session.get_calendar_dates(Market.SH)]
+        iter_dates = [
+            current_date
+            for current_date in calendar_dates
+            if actual_start <= current_date <= actual_end
+        ]
+        if not iter_dates:
+            logger.warning(
+                "未获取到可用交易日历，fetch_hist_code_daily 改为按自然日遍历: start=%s end=%s",
+                actual_start,
+                actual_end,
             )
+            iter_dates = list(_iter_natural_dates(actual_start, actual_end))
+
+        for trade_date in iter_dates:
+            try:
+                code_list = self.session.base.get_hist_code_list(
+                    security_type=security_type,
+                    start_date=to_yyyymmdd(trade_date),
+                    end_date=to_yyyymmdd(trade_date),
+                    local_path=self.config.local_path,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "fetch_hist_code_daily 跳过 trade_date=%s security_type=%s: %s",
+                    trade_date,
+                    security_type,
+                    exc,
+                )
+                continue
             for code in normalize_code_list(code_list or []):
                 yield HistCodeDailyRow(
                     trade_date=trade_date,
@@ -390,6 +432,30 @@ def _normalize_local_path(local_path: str) -> str:
     if not path.endswith("//"):
         path += "//"
     return path
+
+
+def _normalize_calendar_result(result: Any) -> list:
+    if result is None:
+        return []
+    if isinstance(result, list):
+        normalized: list = []
+        for item in result:
+            try:
+                normalized.append(to_yyyymmdd(item))
+            except Exception:
+                text = _as_str(item)
+                if text is None:
+                    continue
+                normalized.append(text)
+        return normalized
+    return []
+
+
+def _iter_natural_dates(start_date: date, end_date: date):
+    current = start_date
+    while current <= end_date:
+        yield current
+        current += timedelta(days=1)
 
 
 def _ensure_dataframe(obj: Any, action: str):
