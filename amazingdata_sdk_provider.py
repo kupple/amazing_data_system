@@ -157,6 +157,15 @@ class AmazingDataSDKSession:
             return fallback
         return to_ch_date(dates[-1])
 
+    def get_snapshot_date(self) -> date:
+        """日级快照接口统一使用当天日期作为落库快照日.
+
+        `get_code_info` / `get_stock_basic` 都属于“每日最新快照”类型，
+        不需要为了拿一个快照日期再去强依赖 `get_calendar()`。
+        """
+
+        return date.today()
+
     def _load_calendar_dates(self) -> list:
         try:
             result = self.base.get_calendar()
@@ -220,9 +229,7 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
         end_date=None,
     ) -> Iterable[CodeInfoRow]:
         frame = _ensure_dataframe(self.session.base.get_code_info(security_type=security_type), "get_code_info")
-        snapshot_date = self.session.get_latest_trade_date(Market.SH)
-        if snapshot_date is None:
-            return
+        snapshot_date = self.session.get_snapshot_date()
         if start_date is not None and snapshot_date < start_date:
             return
         if end_date is not None and snapshot_date > end_date:
@@ -350,9 +357,7 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
         if not normalized_codes:
             return
 
-        snapshot_date = self.session.get_latest_trade_date(Market.SH)
-        if snapshot_date is None:
-            return
+        snapshot_date = self.session.get_snapshot_date()
         if start_date is not None and snapshot_date < start_date:
             return
         if end_date is not None and snapshot_date > end_date:
