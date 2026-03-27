@@ -10,9 +10,6 @@ from datetime import date, datetime
 from typing import Optional, Sequence
 
 
-DEFAULT_SOURCE = "amazingdata"
-
-
 def utcnow() -> datetime:
     """统一生成无时区的 UTC 时间戳，方便写入 ClickHouse DateTime64."""
 
@@ -147,10 +144,6 @@ class TradeCalendarRow:
 
     market: str
     trade_date: date
-    source: str = DEFAULT_SOURCE
-    synced_at: datetime = field(default_factory=utcnow)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass(frozen=True)
@@ -166,10 +159,6 @@ class CodeInfoRow:
     high_limited: Optional[float] = None
     low_limited: Optional[float] = None
     price_tick: Optional[float] = None
-    source: str = DEFAULT_SOURCE
-    synced_at: datetime = field(default_factory=utcnow)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass(frozen=True)
@@ -183,10 +172,6 @@ class HistCodeDailyRow:
     trade_date: date
     security_type: str
     code: str
-    source: str = DEFAULT_SOURCE
-    synced_at: datetime = field(default_factory=utcnow)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass(frozen=True)
@@ -197,10 +182,6 @@ class PriceFactorRow:
     trade_date: date
     code: str
     factor_value: float
-    source: str = DEFAULT_SOURCE
-    synced_at: datetime = field(default_factory=utcnow)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass(frozen=True)
@@ -221,10 +202,6 @@ class StockBasicRow:
     listplate_name: Optional[str] = None
     comp_sname_eng: Optional[str] = None
     is_listed: Optional[int] = None
-    source: str = DEFAULT_SOURCE
-    synced_at: datetime = field(default_factory=utcnow)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass(frozen=True)
@@ -242,10 +219,6 @@ class HistoryStockStatusRow:
     is_susp_sec: Optional[str] = None
     is_wd_sec: Optional[str] = None
     is_xr_sec: Optional[str] = None
-    source: str = DEFAULT_SOURCE
-    synced_at: datetime = field(default_factory=utcnow)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass(frozen=True)
@@ -253,7 +226,6 @@ class MarketKlineRow:
     """`query_kline` 落库行."""
 
     trade_time: datetime
-    trade_date: date
     code: str
     period: str
     open: Optional[float] = None
@@ -262,10 +234,6 @@ class MarketKlineRow:
     close: Optional[float] = None
     volume: Optional[float] = None
     amount: Optional[float] = None
-    source: str = DEFAULT_SOURCE
-    synced_at: datetime = field(default_factory=utcnow)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass(frozen=True)
@@ -276,7 +244,6 @@ class MarketSnapshotRow:
     """
 
     trade_time: datetime
-    trade_date: date
     code: str
     snapshot_kind: str
     pre_close: Optional[float] = None
@@ -332,10 +299,6 @@ class MarketSnapshotRow:
     bid_price_limit_down: Optional[float] = None
     offer_price_limit_up: Optional[float] = None
     offer_price_limit_down: Optional[float] = None
-    source: str = DEFAULT_SOURCE
-    synced_at: datetime = field(default_factory=utcnow)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass(frozen=True)
@@ -358,15 +321,33 @@ class SyncTaskLogRow:
     message: Optional[str] = None
     started_at: datetime = field(default_factory=utcnow)
     finished_at: datetime = field(default_factory=utcnow)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
+
+
+@dataclass(frozen=True)
+class SyncCheckpointRow:
+    """同步断点记录.
+
+    这张表只负责：
+    1. 记录某个任务/范围最近一次同步状态
+    2. 记录最近一次成功同步到哪个日期
+    3. 支撑“当天成功后跳过”和断点恢复
+    """
+
+    task_name: str
+    scope_key: str
+    run_date: date
+    status: str
+    target_table: str
+    checkpoint_date: Optional[date] = None
+    row_count: int = 0
+    message: Optional[str] = None
+    finished_at: datetime = field(default_factory=utcnow)
 
 
 __all__ = [
     "CalendarQuery",
     "CodeInfoQuery",
     "CodeInfoRow",
-    "DEFAULT_SOURCE",
     "HistoryStockStatusQuery",
     "HistoryStockStatusRow",
     "MarketKlineQuery",
@@ -379,6 +360,7 @@ __all__ = [
     "PriceFactorRow",
     "StockBasicQuery",
     "StockBasicRow",
+    "SyncCheckpointRow",
     "SyncTaskLogRow",
     "TradeCalendarRow",
     "normalize_code_list",

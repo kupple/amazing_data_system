@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover
 
 from amazingdata_constants import KLINE_FIELDS, SNAPSHOT_FIELDS, SNAPSHOT_KIND_TO_FIELDS, SnapshotKind
 from clickhouse_tables import (
-    AD_MARKET_KLINE_TABLE,
+    AD_MARKET_KLINE_DAILY_TABLE,
     AD_MARKET_SNAPSHOT_TABLE,
     iter_market_data_table_ddls,
 )
@@ -24,7 +24,6 @@ class MarketDataRepository(BaseDataRepository):
 
     MARKET_KLINE_COLUMNS = (
         "trade_time",
-        "trade_date",
         "code",
         "period",
         "open",
@@ -33,14 +32,9 @@ class MarketDataRepository(BaseDataRepository):
         "close",
         "volume",
         "amount",
-        "source",
-        "synced_at",
-        "created_at",
-        "updated_at",
     )
     MARKET_SNAPSHOT_COLUMNS = (
         "trade_time",
-        "trade_date",
         "code",
         "snapshot_kind",
         "pre_close",
@@ -96,10 +90,6 @@ class MarketDataRepository(BaseDataRepository):
         "bid_price_limit_down",
         "offer_price_limit_up",
         "offer_price_limit_down",
-        "source",
-        "synced_at",
-        "created_at",
-        "updated_at",
     )
 
     def ensure_tables(self) -> None:
@@ -109,10 +99,10 @@ class MarketDataRepository(BaseDataRepository):
 
     def save_market_kline_rows(self, rows) -> int:
         return self._insert_dataclass_rows_in_batches(
-            table=AD_MARKET_KLINE_TABLE,
+            table=AD_MARKET_KLINE_DAILY_TABLE,
             columns=self.MARKET_KLINE_COLUMNS,
             rows=rows,
-            partition_field="trade_date",
+            partition_field="trade_time",
         )
 
     def save_market_snapshot_rows(self, rows) -> int:
@@ -120,15 +110,15 @@ class MarketDataRepository(BaseDataRepository):
             table=AD_MARKET_SNAPSHOT_TABLE,
             columns=self.MARKET_SNAPSHOT_COLUMNS,
             rows=rows,
-            partition_field="trade_date",
+            partition_field="trade_time",
         )
 
     def load_latest_kline_trade_date(self, code_list: list[str], period: str):
         if not code_list:
             return None
         sql = f"""
-        SELECT code, max(trade_date) AS latest_trade_date
-        FROM {AD_MARKET_KLINE_TABLE}
+        SELECT code, max(toDate(trade_time)) AS latest_trade_date
+        FROM {AD_MARKET_KLINE_DAILY_TABLE}
         WHERE period = {{period:String}}
           AND code IN {{code_list:Array(String)}}
         GROUP BY code
@@ -146,8 +136,8 @@ class MarketDataRepository(BaseDataRepository):
         if not code_list:
             return {}
         sql = f"""
-        SELECT code, max(trade_date) AS latest_trade_date
-        FROM {AD_MARKET_KLINE_TABLE}
+        SELECT code, max(toDate(trade_time)) AS latest_trade_date
+        FROM {AD_MARKET_KLINE_DAILY_TABLE}
         WHERE period = {{period:String}}
           AND code IN {{code_list:Array(String)}}
         GROUP BY code
@@ -160,6 +150,10 @@ class MarketDataRepository(BaseDataRepository):
                 continue
             code = str(row[0])
             latest_trade_date = row[1] if len(row) > 1 else None
+            if latest_trade_date is not None:
+                # 过滤明显错误的脏时间，避免历史错误数据把增量基准拉回 1970 年。
+                if str(latest_trade_date) < "1990-01-01":
+                    latest_trade_date = None
             result[code] = latest_trade_date
         return result
 
@@ -167,7 +161,7 @@ class MarketDataRepository(BaseDataRepository):
         if not code_list:
             return None
         sql = f"""
-        SELECT code, max(trade_date) AS latest_trade_date
+        SELECT code, max(toDate(trade_time)) AS latest_trade_date
         FROM {AD_MARKET_SNAPSHOT_TABLE}
         WHERE code IN {{code_list:Array(String)}}
         GROUP BY code
@@ -191,17 +185,17 @@ class MarketDataRepository(BaseDataRepository):
         SELECT
             code,
             trade_time,
-            argMax(open, updated_at) AS open,
-            argMax(high, updated_at) AS high,
-            argMax(low, updated_at) AS low,
-            argMax(close, updated_at) AS close,
-            argMax(volume, updated_at) AS volume,
-            argMax(amount, updated_at) AS amount
-        FROM {AD_MARKET_KLINE_TABLE}
+            any(open) AS open,
+            any(high) AS high,
+            any(low) AS low,
+            any(close) AS close,
+            any(volume) AS volume,
+            any(amount) AS amount
+        FROM {AD_MARKET_KLINE_DAILY_TABLE}
         WHERE period = {{period:String}}
           AND code IN {{code_list:Array(String)}}
-          AND trade_date >= {{begin_date:Date}}
-          AND trade_date <= {{end_date:Date}}
+          AND toDate(trade_time) >= {{begin_date:Date}}
+          AND toDate(trade_time) <= {{end_date:Date}}
         GROUP BY code, trade_time
         ORDER BY code, trade_time
         """
@@ -238,64 +232,64 @@ class MarketDataRepository(BaseDataRepository):
         SELECT
             code,
             trade_time,
-            argMax(snapshot_kind, updated_at) AS snapshot_kind,
-            argMax(pre_close, updated_at) AS pre_close,
-            argMax(last, updated_at) AS last,
-            argMax(open, updated_at) AS open,
-            argMax(high, updated_at) AS high,
-            argMax(low, updated_at) AS low,
-            argMax(close, updated_at) AS close,
-            argMax(volume, updated_at) AS volume,
-            argMax(amount, updated_at) AS amount,
-            argMax(num_trades, updated_at) AS num_trades,
-            argMax(high_limited, updated_at) AS high_limited,
-            argMax(low_limited, updated_at) AS low_limited,
-            argMax(ask_price1, updated_at) AS ask_price1,
-            argMax(ask_price2, updated_at) AS ask_price2,
-            argMax(ask_price3, updated_at) AS ask_price3,
-            argMax(ask_price4, updated_at) AS ask_price4,
-            argMax(ask_price5, updated_at) AS ask_price5,
-            argMax(ask_volume1, updated_at) AS ask_volume1,
-            argMax(ask_volume2, updated_at) AS ask_volume2,
-            argMax(ask_volume3, updated_at) AS ask_volume3,
-            argMax(ask_volume4, updated_at) AS ask_volume4,
-            argMax(ask_volume5, updated_at) AS ask_volume5,
-            argMax(bid_price1, updated_at) AS bid_price1,
-            argMax(bid_price2, updated_at) AS bid_price2,
-            argMax(bid_price3, updated_at) AS bid_price3,
-            argMax(bid_price4, updated_at) AS bid_price4,
-            argMax(bid_price5, updated_at) AS bid_price5,
-            argMax(bid_volume1, updated_at) AS bid_volume1,
-            argMax(bid_volume2, updated_at) AS bid_volume2,
-            argMax(bid_volume3, updated_at) AS bid_volume3,
-            argMax(bid_volume4, updated_at) AS bid_volume4,
-            argMax(bid_volume5, updated_at) AS bid_volume5,
-            argMax(iopv, updated_at) AS iopv,
-            argMax(trading_phase_code, updated_at) AS trading_phase_code,
-            argMax(total_long_position, updated_at) AS total_long_position,
-            argMax(pre_settle, updated_at) AS pre_settle,
-            argMax(auction_price, updated_at) AS auction_price,
-            argMax(auction_volume, updated_at) AS auction_volume,
-            argMax(settle, updated_at) AS settle,
-            argMax(contract_type, updated_at) AS contract_type,
-            argMax(expire_date, updated_at) AS expire_date,
-            argMax(underlying_security_code, updated_at) AS underlying_security_code,
-            argMax(exercise_price, updated_at) AS exercise_price,
-            argMax(action_day, updated_at) AS action_day,
-            argMax(trading_day, updated_at) AS trading_day,
-            argMax(pre_open_interest, updated_at) AS pre_open_interest,
-            argMax(open_interest, updated_at) AS open_interest,
-            argMax(average_price, updated_at) AS average_price,
-            argMax(nominal_price, updated_at) AS nominal_price,
-            argMax(ref_price, updated_at) AS ref_price,
-            argMax(bid_price_limit_up, updated_at) AS bid_price_limit_up,
-            argMax(bid_price_limit_down, updated_at) AS bid_price_limit_down,
-            argMax(offer_price_limit_up, updated_at) AS offer_price_limit_up,
-            argMax(offer_price_limit_down, updated_at) AS offer_price_limit_down
+            any(snapshot_kind) AS snapshot_kind,
+            any(pre_close) AS pre_close,
+            any(last) AS last,
+            any(open) AS open,
+            any(high) AS high,
+            any(low) AS low,
+            any(close) AS close,
+            any(volume) AS volume,
+            any(amount) AS amount,
+            any(num_trades) AS num_trades,
+            any(high_limited) AS high_limited,
+            any(low_limited) AS low_limited,
+            any(ask_price1) AS ask_price1,
+            any(ask_price2) AS ask_price2,
+            any(ask_price3) AS ask_price3,
+            any(ask_price4) AS ask_price4,
+            any(ask_price5) AS ask_price5,
+            any(ask_volume1) AS ask_volume1,
+            any(ask_volume2) AS ask_volume2,
+            any(ask_volume3) AS ask_volume3,
+            any(ask_volume4) AS ask_volume4,
+            any(ask_volume5) AS ask_volume5,
+            any(bid_price1) AS bid_price1,
+            any(bid_price2) AS bid_price2,
+            any(bid_price3) AS bid_price3,
+            any(bid_price4) AS bid_price4,
+            any(bid_price5) AS bid_price5,
+            any(bid_volume1) AS bid_volume1,
+            any(bid_volume2) AS bid_volume2,
+            any(bid_volume3) AS bid_volume3,
+            any(bid_volume4) AS bid_volume4,
+            any(bid_volume5) AS bid_volume5,
+            any(iopv) AS iopv,
+            any(trading_phase_code) AS trading_phase_code,
+            any(total_long_position) AS total_long_position,
+            any(pre_settle) AS pre_settle,
+            any(auction_price) AS auction_price,
+            any(auction_volume) AS auction_volume,
+            any(settle) AS settle,
+            any(contract_type) AS contract_type,
+            any(expire_date) AS expire_date,
+            any(underlying_security_code) AS underlying_security_code,
+            any(exercise_price) AS exercise_price,
+            any(action_day) AS action_day,
+            any(trading_day) AS trading_day,
+            any(pre_open_interest) AS pre_open_interest,
+            any(open_interest) AS open_interest,
+            any(average_price) AS average_price,
+            any(nominal_price) AS nominal_price,
+            any(ref_price) AS ref_price,
+            any(bid_price_limit_up) AS bid_price_limit_up,
+            any(bid_price_limit_down) AS bid_price_limit_down,
+            any(offer_price_limit_up) AS offer_price_limit_up,
+            any(offer_price_limit_down) AS offer_price_limit_down
         FROM {AD_MARKET_SNAPSHOT_TABLE}
         WHERE code IN {{code_list:Array(String)}}
-          AND trade_date >= {{begin_date:Date}}
-          AND trade_date <= {{end_date:Date}}
+          AND toDate(trade_time) >= {{begin_date:Date}}
+          AND toDate(trade_time) <= {{end_date:Date}}
         GROUP BY code, trade_time
         ORDER BY code, trade_time
         """

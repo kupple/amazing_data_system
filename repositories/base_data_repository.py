@@ -20,6 +20,7 @@ from clickhouse_tables import (
     AD_CODE_INFO_DAILY_TABLE,
     AD_HIST_CODE_DAILY_TABLE,
     AD_PRICE_FACTOR_TABLE,
+    AD_SYNC_CHECKPOINT_TABLE,
     AD_SYNC_TASK_LOG_TABLE,
     AD_TRADE_CALENDAR_TABLE,
     iter_base_data_table_ddls,
@@ -32,6 +33,7 @@ from data_models import (
     HistCodeQuery,
     PriceFactorQuery,
     PriceFactorRow,
+    SyncCheckpointRow,
     SyncTaskLogRow,
     TradeCalendarRow,
     to_ch_date,
@@ -53,10 +55,6 @@ class BaseDataRepository:
     TRADE_CALENDAR_COLUMNS = (
         "market",
         "trade_date",
-        "source",
-        "synced_at",
-        "created_at",
-        "updated_at",
     )
     CODE_INFO_COLUMNS = (
         "snapshot_date",
@@ -68,29 +66,17 @@ class BaseDataRepository:
         "high_limited",
         "low_limited",
         "price_tick",
-        "source",
-        "synced_at",
-        "created_at",
-        "updated_at",
     )
     HIST_CODE_DAILY_COLUMNS = (
         "trade_date",
         "security_type",
         "code",
-        "source",
-        "synced_at",
-        "created_at",
-        "updated_at",
     )
     PRICE_FACTOR_COLUMNS = (
         "factor_type",
         "trade_date",
         "code",
         "factor_value",
-        "source",
-        "synced_at",
-        "created_at",
-        "updated_at",
     )
     SYNC_TASK_LOG_COLUMNS = (
         "task_name",
@@ -104,8 +90,17 @@ class BaseDataRepository:
         "message",
         "started_at",
         "finished_at",
-        "created_at",
-        "updated_at",
+    )
+    SYNC_CHECKPOINT_COLUMNS = (
+        "task_name",
+        "scope_key",
+        "run_date",
+        "status",
+        "target_table",
+        "checkpoint_date",
+        "row_count",
+        "message",
+        "finished_at",
     )
 
     def __init__(self, client: ClickHouseConnection, insert_batch_size: int = 5000) -> None:
@@ -152,6 +147,28 @@ class BaseDataRepository:
         self._insert_dataclass_rows_in_batches(
             table=AD_SYNC_TASK_LOG_TABLE,
             columns=self.SYNC_TASK_LOG_COLUMNS,
+            rows=[row],
+            partition_field="run_date",
+        )
+        checkpoint_date = row.end_date or row.start_date
+        self.upsert_sync_checkpoint(
+            SyncCheckpointRow(
+                task_name=row.task_name,
+                scope_key=row.scope_key,
+                run_date=row.run_date,
+                status=row.status,
+                target_table=row.target_table,
+                checkpoint_date=checkpoint_date,
+                row_count=row.row_count,
+                message=row.message,
+                finished_at=row.finished_at,
+            )
+        )
+
+    def upsert_sync_checkpoint(self, row: SyncCheckpointRow) -> None:
+        self._insert_dataclass_rows_in_batches(
+            table=AD_SYNC_CHECKPOINT_TABLE,
+            columns=self.SYNC_CHECKPOINT_COLUMNS,
             rows=[row],
             partition_field="run_date",
         )
@@ -218,10 +235,27 @@ class BaseDataRepository:
             return None
         return min(latest_dates)
 
+    def load_sync_checkpoint_date(self, task_name: str, scope_key: str):
+        sql = f"""
+        SELECT argMax(checkpoint_date, finished_at)
+        FROM {AD_SYNC_CHECKPOINT_TABLE}
+        WHERE task_name = {{task_name:String}}
+          AND scope_key = {{scope_key:String}}
+          AND status = {{status:String}}
+        """
+        return self.client.query_value(
+            sql,
+            {
+                "task_name": task_name,
+                "scope_key": scope_key,
+                "status": SyncStatus.SUCCESS,
+            },
+        )
+
     def has_successful_sync_today(self, task_name: str, scope_key: str, run_date: date) -> bool:
         sql = f"""
         SELECT count()
-        FROM {AD_SYNC_TASK_LOG_TABLE}
+        FROM {AD_SYNC_CHECKPOINT_TABLE}
         WHERE task_name = {{task_name:String}}
           AND scope_key = {{scope_key:String}}
           AND run_date = {{run_date:Date}}
@@ -258,12 +292,12 @@ class BaseDataRepository:
         sql = f"""
         SELECT
             code,
-            argMax(symbol, updated_at) AS symbol,
-            argMax(security_status_raw, updated_at) AS security_status,
-            argMax(pre_close, updated_at) AS pre_close,
-            argMax(high_limited, updated_at) AS high_limited,
-            argMax(low_limited, updated_at) AS low_limited,
-            argMax(price_tick, updated_at) AS price_tick
+            any(symbol) AS symbol,
+            any(security_status_raw) AS security_status,
+            any(pre_close) AS pre_close,
+            any(high_limited) AS high_limited,
+            any(low_limited) AS low_limited,
+            any(price_tick) AS price_tick
         FROM {AD_CODE_INFO_DAILY_TABLE}
         WHERE security_type = {{security_type:String}}
           AND snapshot_date = {{snapshot_date:Date}}
@@ -311,7 +345,7 @@ class BaseDataRepository:
         SELECT
             trade_date,
             code,
-            argMax(factor_value, updated_at) AS factor_value
+            any(factor_value) AS factor_value
         FROM {AD_PRICE_FACTOR_TABLE}
         WHERE factor_type = {{factor_type:String}}
           AND code IN {{code_list:Array(String)}}

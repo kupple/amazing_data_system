@@ -52,10 +52,6 @@ class InfoDataRepository(BaseDataRepository):
         "listplate_name",
         "comp_sname_eng",
         "is_listed",
-        "source",
-        "synced_at",
-        "created_at",
-        "updated_at",
     )
     HISTORY_STOCK_STATUS_COLUMNS = (
         "trade_date",
@@ -69,10 +65,6 @@ class InfoDataRepository(BaseDataRepository):
         "is_susp_sec",
         "is_wd_sec",
         "is_xr_sec",
-        "source",
-        "synced_at",
-        "created_at",
-        "updated_at",
     )
 
     def ensure_tables(self) -> None:
@@ -148,15 +140,15 @@ class InfoDataRepository(BaseDataRepository):
         sql = f"""
         SELECT
             market_code,
-            argMax(security_name, updated_at) AS security_name,
-            argMax(comp_name, updated_at) AS comp_name,
-            argMax(pinyin, updated_at) AS pinyin,
-            argMax(comp_name_eng, updated_at) AS comp_name_eng,
-            argMax(list_date, updated_at) AS list_date,
-            argMax(delist_date, updated_at) AS delist_date,
-            argMax(listplate_name, updated_at) AS listplate_name,
-            argMax(comp_sname_eng, updated_at) AS comp_sname_eng,
-            argMax(is_listed, updated_at) AS is_listed
+            any(security_name) AS security_name,
+            any(comp_name) AS comp_name,
+            any(pinyin) AS pinyin,
+            any(comp_name_eng) AS comp_name_eng,
+            any(list_date) AS list_date,
+            any(delist_date) AS delist_date,
+            any(listplate_name) AS listplate_name,
+            any(comp_sname_eng) AS comp_sname_eng,
+            any(is_listed) AS is_listed
         FROM {AD_STOCK_BASIC_DAILY_TABLE}
         WHERE snapshot_date = {{snapshot_date:Date}}
           AND market_code IN {{code_list:Array(String)}}
@@ -190,15 +182,15 @@ class InfoDataRepository(BaseDataRepository):
         SELECT
             market_code,
             trade_date,
-            argMax(preclose, updated_at) AS preclose,
-            argMax(high_limited, updated_at) AS high_limited,
-            argMax(low_limited, updated_at) AS low_limited,
-            argMax(price_high_lmt_rate, updated_at) AS price_high_lmt_rate,
-            argMax(price_low_lmt_rate, updated_at) AS price_low_lmt_rate,
-            argMax(is_st_sec, updated_at) AS is_st_sec,
-            argMax(is_susp_sec, updated_at) AS is_susp_sec,
-            argMax(is_wd_sec, updated_at) AS is_wd_sec,
-            argMax(is_xr_sec, updated_at) AS is_xr_sec
+            any(preclose) AS preclose,
+            any(high_limited) AS high_limited,
+            any(low_limited) AS low_limited,
+            any(price_high_lmt_rate) AS price_high_lmt_rate,
+            any(price_low_lmt_rate) AS price_low_lmt_rate,
+            any(is_st_sec) AS is_st_sec,
+            any(is_susp_sec) AS is_susp_sec,
+            any(is_wd_sec) AS is_wd_sec,
+            any(is_xr_sec) AS is_xr_sec
         FROM {AD_HISTORY_STOCK_STATUS_DAILY_TABLE}
         WHERE market_code IN {{code_list:Array(String)}}
         """

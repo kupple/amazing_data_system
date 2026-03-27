@@ -158,8 +158,8 @@ class InfoData:
         if not normalized_codes:
             raise BaseDataParameterError("code_list 不能为空。")
 
-        latest_date = self.repository.load_latest_stock_basic_snapshot_date(normalized_codes)
         scope_key = self._build_code_scope_key("get_stock_basic", normalized_codes)
+        latest_date = self.repository.load_sync_checkpoint_date("get_stock_basic", scope_key)
         return self._run_sync_job(
             task_name="get_stock_basic",
             scope_key=scope_key,
@@ -188,14 +188,14 @@ class InfoData:
         end = to_ch_date(end_date) if end_date is not None else None
         self._validate_optional_date_range(begin, end)
 
-        latest_date = self.repository.load_latest_history_stock_status_trade_date(normalized_codes)
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
         scope_key = self._build_code_scope_key(
             "get_history_stock_status",
             normalized_codes,
             begin_date=begin,
             end_date=end,
         )
+        latest_date = self.repository.load_sync_checkpoint_date("get_history_stock_status", scope_key)
+        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
         return self._run_sync_job(
             task_name="get_history_stock_status",
             scope_key=scope_key,
@@ -372,8 +372,6 @@ class InfoData:
                     message=message,
                     started_at=started_at,
                     finished_at=finished_at,
-                    created_at=finished_at,
-                    updated_at=finished_at,
                 )
             )
         except Exception:

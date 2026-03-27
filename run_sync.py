@@ -132,11 +132,10 @@ def run_daily_kline(
     日线同步逻辑：
     1. 先拿最新股票池，避免已退市/新上市代码不同步
     2. 股票代码先排序，保证批次切分稳定，便于中断后按同样批次恢复
-    3. 按批次切代码，避免一次请求过大
-    4. 每批调用 `MarketData.sync_kline(...)`
-    5. `sync_kline` 内部再按 ClickHouse 最新日期做增量同步
-    6. 同一天同一批次已成功同步则自动跳过
-    7. 如果中断，重跑时会继续基于库里最新日期增量同步
+    3. 外层仍按批次调度，避免一次拉取过多代码
+    4. 但真正同步时按单只股票逐个执行
+    5. 每只股票同步前先查库里最新日期，作为增量起点
+    6. 如果查不到，就从传入 begin_date 开始
     """
 
     total_inserted = 0
@@ -160,7 +159,7 @@ def run_daily_kline(
         )
         for batch_index, batch_codes in enumerate(batches, start=1):
             logger.info(
-                "daily_kline group=%s/%s batch=%s/%s security_type=%s code_count=%s period=%s",
+                "daily_kline group=%s/%s batch=%s/%s security_type=%s code_count=%s period=%s mode=per_stock_incremental",
                 group_index,
                 len(code_groups),
                 batch_index,

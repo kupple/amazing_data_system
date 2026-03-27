@@ -24,9 +24,10 @@ AD_CODE_INFO_DAILY_TABLE = "ad_code_info_daily"
 AD_HIST_CODE_DAILY_TABLE = "ad_hist_code_daily"
 AD_PRICE_FACTOR_TABLE = "ad_price_factor"
 AD_SYNC_TASK_LOG_TABLE = "ad_sync_task_log"
+AD_SYNC_CHECKPOINT_TABLE = "ad_sync_checkpoint"
 AD_STOCK_BASIC_DAILY_TABLE = "ad_stock_basic_daily"
 AD_HISTORY_STOCK_STATUS_DAILY_TABLE = "ad_history_stock_status_daily"
-AD_MARKET_KLINE_TABLE = "ad_market_kline"
+AD_MARKET_KLINE_DAILY_TABLE = "ad_market_kline_daily"
 AD_MARKET_SNAPSHOT_TABLE = "ad_market_snapshot"
 
 
@@ -35,13 +36,9 @@ CREATE TABLE IF NOT EXISTS {AD_TRADE_CALENDAR_TABLE}
 (
     -- 数据库列统一使用小写 snake_case
     market LowCardinality(String),
-    trade_date Date,
-    source LowCardinality(String) DEFAULT 'amazingdata',
-    synced_at DateTime64(3),
-    created_at DateTime64(3) DEFAULT now64(3),
-    updated_at DateTime64(3)
+    trade_date Date
 )
-ENGINE = ReplacingMergeTree(updated_at)
+ENGINE = MergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (market, trade_date)
 """
@@ -58,13 +55,9 @@ CREATE TABLE IF NOT EXISTS {AD_CODE_INFO_DAILY_TABLE}
     pre_close Nullable(Float64),
     high_limited Nullable(Float64),
     low_limited Nullable(Float64),
-    price_tick Nullable(Float64),
-    source LowCardinality(String) DEFAULT 'amazingdata',
-    synced_at DateTime64(3),
-    created_at DateTime64(3) DEFAULT now64(3),
-    updated_at DateTime64(3)
+    price_tick Nullable(Float64)
 )
-ENGINE = ReplacingMergeTree(updated_at)
+ENGINE = MergeTree
 PARTITION BY toYYYYMM(snapshot_date)
 ORDER BY (security_type, snapshot_date, code)
 """
@@ -75,13 +68,9 @@ CREATE TABLE IF NOT EXISTS {AD_HIST_CODE_DAILY_TABLE}
 (
     trade_date Date,
     security_type LowCardinality(String),
-    code String,
-    source LowCardinality(String) DEFAULT 'amazingdata',
-    synced_at DateTime64(3),
-    created_at DateTime64(3) DEFAULT now64(3),
-    updated_at DateTime64(3)
+    code String
 )
-ENGINE = ReplacingMergeTree(updated_at)
+ENGINE = MergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (security_type, trade_date, code)
 """
@@ -93,13 +82,9 @@ CREATE TABLE IF NOT EXISTS {AD_PRICE_FACTOR_TABLE}
     factor_type LowCardinality(String),
     trade_date Date,
     code String,
-    factor_value Float64,
-    source LowCardinality(String) DEFAULT 'amazingdata',
-    synced_at DateTime64(3),
-    created_at DateTime64(3) DEFAULT now64(3),
-    updated_at DateTime64(3)
+    factor_value Float64
 )
-ENGINE = ReplacingMergeTree(updated_at)
+ENGINE = MergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (factor_type, code, trade_date)
 """
@@ -118,13 +103,30 @@ CREATE TABLE IF NOT EXISTS {AD_SYNC_TASK_LOG_TABLE}
     row_count UInt64,
     message Nullable(String),
     started_at DateTime64(3),
-    finished_at DateTime64(3),
-    created_at DateTime64(3) DEFAULT now64(3),
-    updated_at DateTime64(3)
+    finished_at DateTime64(3)
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(run_date)
 ORDER BY (task_name, scope_key, run_date, started_at)
+"""
+
+
+CREATE_AD_SYNC_CHECKPOINT_TABLE = f"""
+CREATE TABLE IF NOT EXISTS {AD_SYNC_CHECKPOINT_TABLE}
+(
+    task_name LowCardinality(String),
+    scope_key String,
+    run_date Date,
+    status LowCardinality(String),
+    target_table LowCardinality(String),
+    checkpoint_date Nullable(Date),
+    row_count UInt64,
+    message Nullable(String),
+    finished_at DateTime64(3)
+)
+ENGINE = ReplacingMergeTree(finished_at)
+PARTITION BY toYYYYMM(run_date)
+ORDER BY (task_name, scope_key, run_date)
 """
 
 
@@ -141,13 +143,9 @@ CREATE TABLE IF NOT EXISTS {AD_STOCK_BASIC_DAILY_TABLE}
     delist_date Nullable(Int32),
     listplate_name Nullable(String),
     comp_sname_eng Nullable(String),
-    is_listed Nullable(Int32),
-    source LowCardinality(String) DEFAULT 'amazingdata',
-    synced_at DateTime64(3),
-    created_at DateTime64(3) DEFAULT now64(3),
-    updated_at DateTime64(3)
+    is_listed Nullable(Int32)
 )
-ENGINE = ReplacingMergeTree(updated_at)
+ENGINE = MergeTree
 PARTITION BY toYYYYMM(snapshot_date)
 ORDER BY (snapshot_date, market_code)
 """
@@ -166,23 +164,18 @@ CREATE TABLE IF NOT EXISTS {AD_HISTORY_STOCK_STATUS_DAILY_TABLE}
     is_st_sec Nullable(String),
     is_susp_sec Nullable(String),
     is_wd_sec Nullable(String),
-    is_xr_sec Nullable(String),
-    source LowCardinality(String) DEFAULT 'amazingdata',
-    synced_at DateTime64(3),
-    created_at DateTime64(3) DEFAULT now64(3),
-    updated_at DateTime64(3)
+    is_xr_sec Nullable(String)
 )
-ENGINE = ReplacingMergeTree(updated_at)
+ENGINE = MergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (trade_date, market_code)
 """
 
 
-CREATE_AD_MARKET_KLINE_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {AD_MARKET_KLINE_TABLE}
+CREATE_AD_MARKET_KLINE_DAILY_TABLE = f"""
+CREATE TABLE IF NOT EXISTS {AD_MARKET_KLINE_DAILY_TABLE}
 (
     trade_time DateTime64(3),
-    trade_date Date,
     code String,
     period LowCardinality(String),
     open Nullable(Float64),
@@ -190,14 +183,10 @@ CREATE TABLE IF NOT EXISTS {AD_MARKET_KLINE_TABLE}
     low Nullable(Float64),
     close Nullable(Float64),
     volume Nullable(Float64),
-    amount Nullable(Float64),
-    source LowCardinality(String) DEFAULT 'amazingdata',
-    synced_at DateTime64(3),
-    created_at DateTime64(3) DEFAULT now64(3),
-    updated_at DateTime64(3)
+    amount Nullable(Float64)
 )
-ENGINE = ReplacingMergeTree(updated_at)
-PARTITION BY toYYYYMM(trade_date)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(toDate(trade_time))
 ORDER BY (period, code, trade_time)
 """
 
@@ -206,7 +195,6 @@ CREATE_AD_MARKET_SNAPSHOT_TABLE = f"""
 CREATE TABLE IF NOT EXISTS {AD_MARKET_SNAPSHOT_TABLE}
 (
     trade_time DateTime64(3),
-    trade_date Date,
     code String,
     snapshot_kind LowCardinality(String),
     pre_close Nullable(Float64),
@@ -261,14 +249,10 @@ CREATE TABLE IF NOT EXISTS {AD_MARKET_SNAPSHOT_TABLE}
     bid_price_limit_up Nullable(Float64),
     bid_price_limit_down Nullable(Float64),
     offer_price_limit_up Nullable(Float64),
-    offer_price_limit_down Nullable(Float64),
-    source LowCardinality(String) DEFAULT 'amazingdata',
-    synced_at DateTime64(3),
-    created_at DateTime64(3) DEFAULT now64(3),
-    updated_at DateTime64(3)
+    offer_price_limit_down Nullable(Float64)
 )
-ENGINE = ReplacingMergeTree(updated_at)
-PARTITION BY toYYYYMM(trade_date)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(toDate(trade_time))
 ORDER BY (snapshot_kind, code, trade_time)
 """
 
@@ -279,6 +263,7 @@ BASE_DATA_TABLE_DDLS = (
     CREATE_AD_HIST_CODE_DAILY_TABLE,
     CREATE_AD_PRICE_FACTOR_TABLE,
     CREATE_AD_SYNC_TASK_LOG_TABLE,
+    CREATE_AD_SYNC_CHECKPOINT_TABLE,
 )
 
 INFO_DATA_TABLE_DDLS = (
@@ -287,7 +272,7 @@ INFO_DATA_TABLE_DDLS = (
 )
 
 MARKET_DATA_TABLE_DDLS = (
-    CREATE_AD_MARKET_KLINE_TABLE,
+    CREATE_AD_MARKET_KLINE_DAILY_TABLE,
     CREATE_AD_MARKET_SNAPSHOT_TABLE,
 )
 
@@ -314,9 +299,10 @@ __all__ = [
     "AD_CODE_INFO_DAILY_TABLE",
     "AD_HISTORY_STOCK_STATUS_DAILY_TABLE",
     "AD_HIST_CODE_DAILY_TABLE",
-    "AD_MARKET_KLINE_TABLE",
+    "AD_MARKET_KLINE_DAILY_TABLE",
     "AD_MARKET_SNAPSHOT_TABLE",
     "AD_PRICE_FACTOR_TABLE",
+    "AD_SYNC_CHECKPOINT_TABLE",
     "AD_STOCK_BASIC_DAILY_TABLE",
     "AD_SYNC_TASK_LOG_TABLE",
     "AD_TRADE_CALENDAR_TABLE",

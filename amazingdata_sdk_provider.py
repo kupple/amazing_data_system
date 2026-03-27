@@ -532,7 +532,6 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
                     continue
                 yield MarketKlineRow(
                     trade_time=trade_time,
-                    trade_date=trade_time.date(),
                     code=code,
                     period=str(period),
                     open=_as_float(_record_get(record, "open", "OPEN")),
@@ -612,7 +611,6 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
                     continue
                 yield MarketSnapshotRow(
                     trade_time=trade_time,
-                    trade_date=trade_time.date(),
                     code=code,
                     snapshot_kind=snapshot_kind,
                     pre_close=_as_float(_record_get(record, "pre_close", "PRECLOSE", "PRE_CLOSE")),
@@ -919,16 +917,39 @@ def _prepare_market_time_frame(frame, action: str, time_field: str = "trade_time
         normalized[time_field] = normalized[time_field.upper()]
         return normalized
 
-    if not isinstance(normalized.index, pd.RangeIndex):
-        normalized[time_field] = normalized.index
-        return normalized
-
     for candidate in ("trade_date", "TRADE_DATE", "date", "DATE", "datetime", "DATETIME"):
         if candidate in normalized.columns:
             normalized[time_field] = normalized[candidate]
             return normalized
 
+    if _index_looks_like_datetime(normalized.index):
+        normalized[time_field] = normalized.index
+        return normalized
+
     raise TypeError(f"{action} DataFrame 缺少可识别的时间列，且 index 不是时间索引。")
+
+
+def _index_looks_like_datetime(index) -> bool:
+    if pd is None:  # pragma: no cover
+        return False
+    if isinstance(index, pd.DatetimeIndex):
+        return True
+    if isinstance(index, pd.PeriodIndex):
+        return True
+    if isinstance(index, pd.RangeIndex):
+        return False
+    preview = list(index[:3]) if len(index) >= 3 else list(index)
+    if not preview:
+        return False
+    parsed_count = 0
+    for value in preview:
+        dt = _to_datetime(value)
+        if dt is None:
+            return False
+        if dt.year < 1990:
+            return False
+        parsed_count += 1
+    return parsed_count == len(preview)
 
 
 def _record_get(record: dict[str, Any], *candidates: str) -> Any:

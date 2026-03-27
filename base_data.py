@@ -414,7 +414,7 @@ class BaseData:
         """同步交易日历表."""
 
         market = self._validate_market(market)
-        latest_date = self.repository.load_latest_calendar_date(market)
+        latest_date = self.repository.load_sync_checkpoint_date("get_calendar", f"market={market}")
         return self._run_sync_job(
             task_name="get_calendar",
             scope_key=f"market={market}",
@@ -430,7 +430,7 @@ class BaseData:
         """同步证券基础信息表."""
 
         security_type = self._validate_security_type(security_type)
-        latest_date = self.repository.load_latest_code_info_snapshot_date(security_type)
+        latest_date = self.repository.load_sync_checkpoint_date("get_code_info", f"security_type={security_type}")
         return self._run_sync_job(
             task_name="get_code_info",
             scope_key=f"security_type={security_type}",
@@ -455,11 +455,12 @@ class BaseData:
         begin = to_ch_date(begin_date) if begin_date is not None else None
         end = to_ch_date(end_date) if end_date is not None else None
         self._validate_optional_date_range(begin, end)
-        latest_date = self.repository.load_latest_hist_code_trade_date(security_type)
+        scope_key = f"security_type={security_type}|begin_date={begin or ''}|end_date={end or ''}"
+        latest_date = self.repository.load_sync_checkpoint_date("get_hist_code_list", scope_key)
         sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
         return self._run_sync_job(
             task_name="get_hist_code_list",
-            scope_key=f"security_type={security_type}|begin_date={begin or ''}|end_date={end or ''}",
+            scope_key=scope_key,
             target_table=AD_HIST_CODE_DAILY_TABLE,
             latest_date=latest_date,
             fetch_rows=lambda _start_date: self._provider_fetch_hist_code_daily(security_type, sync_start, end),
@@ -559,8 +560,8 @@ class BaseData:
             raise BaseDataParameterError("code_list 不能为空。")
         self._validate_local_path(local_path)
 
-        latest_date = self.repository.load_latest_price_factor_trade_date(factor_type, normalized_codes)
         scope_key = self._build_factor_scope_key(factor_type, normalized_codes)
+        latest_date = self.repository.load_sync_checkpoint_date(f"get_{factor_type}_factor", scope_key)
         return self._run_sync_job(
             task_name=f"get_{factor_type}_factor",
             scope_key=scope_key,
@@ -749,8 +750,6 @@ class BaseData:
                     message=message,
                     started_at=started_at,
                     finished_at=finished_at,
-                    created_at=finished_at,
-                    updated_at=finished_at,
                 )
             )
         except Exception:
