@@ -427,13 +427,17 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider):
         if end_date is not None:
             kwargs["end_date"] = to_yyyymmdd(end_date)
 
-        frame = _ensure_dataframe(self.session.info.get_history_stock_status(**kwargs), "get_history_stock_status")
+        result = self.session.info.get_history_stock_status(**kwargs)
         logger.info(
-            "AmazingData fetch_history_stock_status loaded rows=%s cols=%s",
-            len(frame),
-            len(frame.columns),
+            "AmazingData fetch_history_stock_status loaded result_type=%s rows=%s",
+            type(result).__name__,
+            _count_sdk_result_rows(result),
         )
-        for record in _frame_to_records(frame):
+        for record in _iter_records_from_sdk_result(
+            result,
+            action="get_history_stock_status",
+            injected_code_fields=("MARKET_CODE", "market_code", "CODE", "code"),
+        ):
             market_code = _as_str(_record_get(record, "MARKET_CODE", "market_code", "CODE", "code"))
             trade_date_value = _record_get(record, "TRADE_DATE", "trade_date")
             if not market_code or trade_date_value is None:
@@ -503,6 +507,48 @@ def _ensure_dataframe(obj: Any, action: str):
 
 def _frame_to_records(frame):
     return frame.to_dict("records")
+
+
+def _iter_records_from_sdk_result(
+    obj: Any,
+    action: str,
+    injected_code_fields: Sequence[str] = ("MARKET_CODE", "market_code"),
+):
+    if pd is None:  # pragma: no cover
+        raise RuntimeError("未安装 pandas，无法处理 SDK 返回的 DataFrame。")
+
+    if isinstance(obj, pd.DataFrame):
+        yield from _frame_to_records(obj)
+        return
+
+    if isinstance(obj, dict):
+        for code, value in obj.items():
+            if value is None:
+                continue
+            if not isinstance(value, pd.DataFrame):
+                raise TypeError(
+                    f"{action} 返回 dict 时，value 期望为 DataFrame，实际得到 {type(value).__name__}"
+                )
+            code_text = _as_str(code)
+            for record in _frame_to_records(value):
+                if code_text and all(_record_get(record, field) is None for field in injected_code_fields):
+                    record[injected_code_fields[0]] = code_text
+                yield record
+        return
+
+    raise TypeError(f"{action} 期望返回 DataFrame 或 dict，实际得到 {type(obj).__name__}")
+
+
+def _count_sdk_result_rows(obj: Any) -> int:
+    if pd is not None and isinstance(obj, pd.DataFrame):
+        return int(len(obj))
+    if isinstance(obj, dict):
+        total = 0
+        for value in obj.values():
+            if pd is not None and isinstance(value, pd.DataFrame):
+                total += int(len(value))
+        return total
+    return 0
 
 
 def _record_get(record: dict[str, Any], *candidates: str) -> Any:
