@@ -27,13 +27,34 @@ from market_data import MarketData
 
 logger = logging.getLogger(__name__)
 DEFAULT_FULL_SYNC_BEGIN_DATE = 20100101
+DEFAULT_KLINE_SECURITY_TYPES = (
+    SecurityType.EXTRA_STOCK_A,
+    SecurityType.EXTRA_ETF,
+    SecurityType.EXTRA_KZZ,
+    SecurityType.EXTRA_INDEX_A,
+    SecurityType.EXTRA_ETF_OP,
+    SecurityType.EXTRA_FUTURE,
+)
+DEFAULT_SNAPSHOT_SECURITY_TYPES = (
+    SecurityType.EXTRA_STOCK_A,
+    SecurityType.EXTRA_ETF,
+    SecurityType.EXTRA_KZZ,
+    SecurityType.EXTRA_INDEX_A,
+    SecurityType.EXTRA_HKT,
+    SecurityType.EXTRA_ETF_OP,
+    SecurityType.EXTRA_FUTURE,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AmazingData 正式同步入口")
     parser.add_argument("task", choices=["daily_kline", "daily_snapshot"])
     parser.add_argument("--env-file", default=".env", help=argparse.SUPPRESS)
-    parser.add_argument("--security-type", default=SecurityType.EXTRA_STOCK_A_SH_SZ)
+    parser.add_argument(
+        "--security-type",
+        default="",
+        help="可传单个或逗号分隔多个 security_type；不传则默认同步全部品种",
+    )
     parser.add_argument("--codes", default="", help="逗号分隔的证券代码列表；不传则自动从代码池获取")
     parser.add_argument("--begin-date", type=int, help="开始日期 YYYYMMDD；默认 20100101")
     parser.add_argument("--end-date", type=int, help="结束日期 YYYYMMDD；默认最新交易日")
@@ -67,8 +88,9 @@ def main() -> int:
             end_date=args.end_date,
         )
         code_list = resolve_code_list(
+            task=args.task,
             base_data=base_data,
-            security_type=args.security_type,
+            raw_security_type=args.security_type,
             raw_codes=args.codes,
             limit=args.limit,
         )
@@ -138,10 +160,20 @@ def run_daily_kline(
     """
 
     total_inserted = 0
-    for batch_index, batch_codes in enumerate(iter_batches(code_list, batch_size), start=1):
+    batches = list(iter_batches(code_list, batch_size))
+    total_batches = len(batches)
+    logger.info(
+        "daily_kline start total_codes=%s total_batches=%s begin_date=%s end_date=%s",
+        len(code_list),
+        total_batches,
+        begin_date,
+        end_date,
+    )
+    for batch_index, batch_codes in enumerate(batches, start=1):
         logger.info(
-            "daily_kline batch=%s code_count=%s first_code=%s last_code=%s period=%s",
+            "daily_kline batch=%s/%s code_count=%s first_code=%s last_code=%s period=%s",
             batch_index,
+            total_batches,
             len(batch_codes),
             batch_codes[0],
             batch_codes[-1],
@@ -172,10 +204,20 @@ def run_daily_snapshot(
     """按批同步历史快照."""
 
     total_inserted = 0
-    for batch_index, batch_codes in enumerate(iter_batches(code_list, batch_size), start=1):
+    batches = list(iter_batches(code_list, batch_size))
+    total_batches = len(batches)
+    logger.info(
+        "daily_snapshot start total_codes=%s total_batches=%s begin_date=%s end_date=%s",
+        len(code_list),
+        total_batches,
+        begin_date,
+        end_date,
+    )
+    for batch_index, batch_codes in enumerate(batches, start=1):
         logger.info(
-            "daily_snapshot batch=%s code_count=%s first_code=%s last_code=%s",
+            "daily_snapshot batch=%s/%s code_count=%s first_code=%s last_code=%s",
             batch_index,
+            total_batches,
             len(batch_codes),
             batch_codes[0],
             batch_codes[-1],
@@ -208,21 +250,26 @@ def resolve_date_window(
 
 
 def resolve_code_list(
+    task: str,
     base_data: BaseData,
-    security_type: str,
+    raw_security_type: str,
     raw_codes: str,
     limit: int,
 ) -> list[str]:
     codes = parse_codes(raw_codes)
     if not codes:
-        # 先刷新一次代码池，再从 ClickHouse 获取最新代码列表。
-        base_data.sync_code_info(security_type=security_type, force=False)
-        codes = base_data.get_code_list(security_type=security_type)
-        logger.info(
-            "code_list source=clickhouse_latest_code_pool security_type=%s raw_count=%s",
-            security_type,
-            len(codes),
-        )
+        security_types = resolve_security_types(task=task, raw_security_type=raw_security_type)
+        merged_codes: list[str] = []
+        for security_type in security_types:
+            part_codes = base_data.get_security_universe(security_type=security_type, force=False)
+            logger.info(
+                "code_list source=base_data.get_security_universe security_type=%s raw_count=%s",
+                security_type,
+                len(part_codes),
+            )
+            merged_codes.extend(part_codes)
+        codes = merged_codes
+        logger.info("code_list merged security_types=%s merged_raw_count=%s", security_types, len(codes))
     else:
         logger.info("code_list source=user_input raw_count=%s", len(codes))
     codes = sorted(dict.fromkeys(codes))
@@ -230,8 +277,23 @@ def resolve_code_list(
         codes = codes[:limit]
     if not codes:
         raise RuntimeError("未获取到可同步的证券代码。")
-    logger.info("resolved code_list count=%s codes=%s", len(codes), codes)
+    logger.info(
+        "resolved code_list count=%s preview=%s",
+        len(codes),
+        preview_codes(codes),
+    )
     return codes
+
+
+def resolve_security_types(task: str, raw_security_type: str) -> list[str]:
+    text = str(raw_security_type).strip()
+    if text:
+        return sorted(dict.fromkeys(item.strip() for item in text.split(",") if item.strip()))
+    if task == "daily_kline":
+        return list(DEFAULT_KLINE_SECURITY_TYPES)
+    if task == "daily_snapshot":
+        return list(DEFAULT_SNAPSHOT_SECURITY_TYPES)
+    return [SecurityType.EXTRA_STOCK_A]
 
 
 def parse_codes(raw: str) -> list[str]:
@@ -245,6 +307,12 @@ def iter_batches(items: Sequence[str], batch_size: int) -> Iterable[list[str]]:
     size = max(1, int(batch_size))
     for index in range(0, len(items), size):
         yield list(items[index : index + size])
+
+
+def preview_codes(codes: Sequence[str], limit: int = 10) -> list[str]:
+    if len(codes) <= limit:
+        return list(codes)
+    return list(codes[:limit]) + ["..."]
 
 
 if __name__ == "__main__":

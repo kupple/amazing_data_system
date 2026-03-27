@@ -172,11 +172,182 @@ class BaseData:
     def get_code_list(self, security_type: str = SecurityType.EXTRA_STOCK_A) -> list[str]:
         """获取每日最新代码表.
 
-        不单独维护一张代码表，而是直接从 `get_code_info` 结果投影。
-        这样可以减少一套重复同步和重复落库。
+        对外保留 SDK 方法名，但内部统一走代码池封装：
+        - 先查今天是否已同步过代码池
+        - 已同步则直接从 ClickHouse 读取
+        - 未同步则先确保 `code_info` 已同步，再从 ClickHouse 投影出代码池
         """
 
-        frame = self.get_code_info(security_type=security_type)
+        return self.get_security_universe(security_type=security_type, force=False)
+
+    def get_security_universe(
+        self,
+        security_type: str = SecurityType.EXTRA_STOCK_A,
+        force: bool = False,
+    ) -> list[str]:
+        """统一的证券 universe 入口.
+
+        这是后续所有“取代码池”场景的公共方法。
+        不论是股票、ETF、可转债还是指数，都统一复用同一套：
+        - 今日成功则直接读库
+        - 否则先补 `code_info`
+        - 最终从 ClickHouse 返回标准化代码列表
+        """
+
+        return self.ensure_code_list(security_type=security_type, force=force)
+
+    def get_security_universe_from_db(self, security_type: str = SecurityType.EXTRA_STOCK_A) -> list[str]:
+        """只从 ClickHouse 读取证券 universe，不触发同步."""
+
+        return self.get_code_list_from_db(security_type=security_type)
+
+    def get_stock_universe(
+        self,
+        security_type: str = SecurityType.EXTRA_STOCK_A_SH_SZ,
+        force: bool = False,
+    ) -> list[str]:
+        """获取股票 universe.
+
+        默认使用 `EXTRA_STOCK_A_SH_SZ`，即沪深 A 股。
+        如果需要包含北交所，可显式传 `SecurityType.EXTRA_STOCK_A`。
+        """
+
+        return self.get_security_universe(security_type=security_type, force=force)
+
+    def get_etf_universe(
+        self,
+        security_type: str = SecurityType.EXTRA_ETF,
+        force: bool = False,
+    ) -> list[str]:
+        """获取 ETF universe."""
+
+        return self.get_security_universe(security_type=security_type, force=force)
+
+    def get_kzz_universe(
+        self,
+        security_type: str = SecurityType.EXTRA_KZZ,
+        force: bool = False,
+    ) -> list[str]:
+        """获取可转债 universe."""
+
+        return self.get_security_universe(security_type=security_type, force=force)
+
+    def get_index_universe(
+        self,
+        security_type: str = SecurityType.EXTRA_INDEX_A_SH_SZ,
+        force: bool = False,
+    ) -> list[str]:
+        """获取指数 universe.
+
+        默认使用 `EXTRA_INDEX_A_SH_SZ`，即沪深指数。
+        如果需要包含北交所，可显式传 `SecurityType.EXTRA_INDEX_A`。
+        """
+
+        return self.get_security_universe(security_type=security_type, force=force)
+
+    def ensure_code_list(self, security_type: str = SecurityType.EXTRA_STOCK_A, force: bool = False) -> list[str]:
+        """确保代码池可用，并统一返回 ClickHouse 中的最新代码列表.
+
+        统一流程：
+        1. 先看今天是否已经同步过 `get_code_list`
+        2. 如果同步过，直接从数据库拿代码池
+        3. 如果没同步过，先保证 `get_code_info` 已同步
+        4. 再从数据库投影出代码池
+        5. 记录 `get_code_list` 的同步日志，供后续任务复用
+        """
+
+        security_type = self._validate_security_type(security_type)
+        run_date = datetime.now().date()
+        scope_key = f"security_type={security_type}"
+        started_at = utcnow()
+
+        if not force and self.repository.has_successful_sync_today("get_code_list", scope_key, run_date):
+            code_list = self.get_code_list_from_db(security_type=security_type)
+            if code_list:
+                logger.info(
+                    "get_code_list 已在 %s 同步成功，直接从数据库读取 security_type=%s code_count=%s",
+                    run_date,
+                    security_type,
+                    len(code_list),
+                )
+                return code_list
+            logger.warning(
+                "get_code_list 今日已有成功日志，但数据库代码池为空，改为重新构建 security_type=%s",
+                security_type,
+            )
+
+        if force:
+            self.sync_code_info(security_type=security_type, force=True)
+        else:
+            if self.repository.has_successful_sync_today("get_code_info", scope_key, run_date):
+                logger.info(
+                    "get_code_info 已在 %s 同步成功，get_code_list 直接复用 code_info 数据 security_type=%s",
+                    run_date,
+                    security_type,
+                )
+            else:
+                self.sync_code_info(security_type=security_type, force=False)
+
+        code_list = self.get_code_list_from_db(security_type=security_type)
+        if not code_list and self.sync_provider is not None:
+            logger.warning(
+                "第一次构建代码池后仍为空，改为强制刷新 code_info security_type=%s",
+                security_type,
+            )
+            self.sync_code_info(security_type=security_type, force=True)
+            code_list = self.get_code_list_from_db(security_type=security_type)
+
+        latest_snapshot_date = self.repository.load_latest_code_info_snapshot_date(security_type)
+        finished_at = utcnow()
+
+        if not code_list:
+            message = f"未找到 security_type={security_type} 的代码池数据。"
+            self._write_sync_log(
+                task_name="get_code_list",
+                scope_key=scope_key,
+                run_date=run_date,
+                status=SyncStatus.FAILED,
+                target_table=AD_CODE_INFO_DAILY_TABLE,
+                start_date=latest_snapshot_date,
+                end_date=latest_snapshot_date,
+                row_count=0,
+                message=message,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+            raise BaseDataCacheMissError(message)
+
+        self._write_sync_log(
+            task_name="get_code_list",
+            scope_key=scope_key,
+            run_date=run_date,
+            status=SyncStatus.SUCCESS,
+            target_table=AD_CODE_INFO_DAILY_TABLE,
+            start_date=latest_snapshot_date,
+            end_date=latest_snapshot_date,
+            row_count=len(code_list),
+            message=(
+                f"get_code_list 构建完成 security_type={security_type} "
+                f"snapshot_date={latest_snapshot_date} code_count={len(code_list)}"
+            ),
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+        logger.info(
+            "get_code_list build success security_type=%s snapshot_date=%s code_count=%s",
+            security_type,
+            latest_snapshot_date,
+            len(code_list),
+        )
+        return code_list
+
+    def get_code_list_from_db(self, security_type: str = SecurityType.EXTRA_STOCK_A) -> list[str]:
+        """只从 ClickHouse 获取代码池，不触发同步."""
+
+        security_type = self._validate_security_type(security_type)
+        frame = self.repository.load_code_info_frame(CodeInfoQuery(security_type=security_type))
+        if frame.empty:
+            return []
         return [str(code) for code in frame.index.tolist()]
 
     def get_hist_code_list(
