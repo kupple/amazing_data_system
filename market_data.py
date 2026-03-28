@@ -360,7 +360,7 @@ class MarketData:
 
         begin = to_ch_date(begin_date)
         end = to_ch_date(end_date)
-        period_token = self._resolve_period_token(PeriodName.MIN1)
+        period_token = "10000"
         self._validate_date_range(begin, end)
         logger.info(
             "sync_kline_minute prepared code_count=%s begin_date=%s end_date=%s resolved_period=%s",
@@ -403,7 +403,7 @@ class MarketData:
                     [code],
                     begin_date=sync_start,
                     end_date=end,
-                    period=PeriodName.MIN1,
+                    period=period_token,
                     begin_time=begin_time,
                     end_time=end_time,
                 ),
