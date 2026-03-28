@@ -28,6 +28,7 @@ AD_SYNC_CHECKPOINT_TABLE = "ad_sync_checkpoint"
 AD_STOCK_BASIC_TABLE = "ad_stock_basic"
 AD_HISTORY_STOCK_STATUS_TABLE = "ad_history_stock_status"
 AD_MARKET_KLINE_DAILY_TABLE = "ad_market_kline_daily"
+AD_MARKET_KLINE_MINUTE_TABLE = "ad_market_kline_minute"
 AD_MARKET_SNAPSHOT_TABLE = "ad_market_snapshot"
 
 
@@ -175,7 +176,6 @@ CREATE TABLE IF NOT EXISTS {AD_MARKET_KLINE_DAILY_TABLE}
 (
     trade_time DateTime64(3),
     code String,
-    period LowCardinality(String),
     open Nullable(Float64),
     high Nullable(Float64),
     low Nullable(Float64),
@@ -185,7 +185,25 @@ CREATE TABLE IF NOT EXISTS {AD_MARKET_KLINE_DAILY_TABLE}
 )
 ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(toDate(trade_time))
-ORDER BY (period, code, trade_time)
+ORDER BY (code, trade_time)
+"""
+
+
+CREATE_AD_MARKET_KLINE_MINUTE_TABLE = f"""
+CREATE TABLE IF NOT EXISTS {AD_MARKET_KLINE_MINUTE_TABLE}
+(
+    trade_time DateTime64(3),
+    code String,
+    open Nullable(Float64),
+    high Nullable(Float64),
+    low Nullable(Float64),
+    close Nullable(Float64),
+    volume Nullable(Float64),
+    amount Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMM(toDate(trade_time))
+ORDER BY (code, trade_time)
 """
 
 
@@ -270,6 +288,7 @@ INFO_DATA_TABLE_DDLS = (
 
 MARKET_DATA_TABLE_DDLS = (
     CREATE_AD_MARKET_KLINE_DAILY_TABLE,
+    CREATE_AD_MARKET_KLINE_MINUTE_TABLE,
     CREATE_AD_MARKET_SNAPSHOT_TABLE,
 )
 
@@ -297,6 +316,7 @@ __all__ = [
     "AD_HISTORY_STOCK_STATUS_TABLE",
     "AD_HIST_CODE_DAILY_TABLE",
     "AD_MARKET_KLINE_DAILY_TABLE",
+    "AD_MARKET_KLINE_MINUTE_TABLE",
     "AD_MARKET_SNAPSHOT_TABLE",
     "AD_PRICE_FACTOR_TABLE",
     "AD_SYNC_CHECKPOINT_TABLE",

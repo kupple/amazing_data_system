@@ -522,7 +522,6 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
                 yield MarketKlineRow(
                     trade_time=trade_time,
                     code=code,
-                    period=str(period),
                     open=_as_float(_record_get(record, "open", "OPEN")),
                     high=_as_float(_record_get(record, "high", "HIGH")),
                     low=_as_float(_record_get(record, "low", "LOW")),

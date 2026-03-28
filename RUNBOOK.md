@@ -3,6 +3,7 @@
 ## 当前正式同步入口
 
 - 日线 K 线：`python run_sync.py daily_kline`
+- 1 分钟 K 线：`python run_sync.py minute_kline`
 - 历史快照：`python run_sync.py market_snapshot`
 
 默认行为：
@@ -19,6 +20,7 @@
 - `ad_stock_basic`
 - `ad_history_stock_status`
 - `ad_market_kline_daily`
+- `ad_market_kline_minute`
 - `ad_market_snapshot`
 - `ad_sync_task_log`
 - `ad_sync_checkpoint`
@@ -45,6 +47,13 @@
 - 每只股票同步前先查 `ad_market_kline_daily` 中该股票最新日期
 - 如果没有历史数据，则从传入 `begin_date` 开始
 
+### minute_kline
+
+- 先获取 A 股代码池
+- 按单只股票逐个同步
+- 每只股票同步前先查 `ad_market_kline_minute` 中该股票最新日期
+- 仅同步 1 分钟 K 线
+
 ### market_snapshot
 
 - 先获取 A 股代码池
@@ -57,6 +66,12 @@
 
 ```bash
 python run_sync.py daily_kline --begin-date 20240101 --end-date 20240131 --limit 20 --force --log-level INFO
+```
+
+### 小范围验证 1 分钟
+
+```bash
+python run_sync.py minute_kline --begin-date 20240115 --end-date 20240115 --limit 20 --force --log-level INFO
 ```
 
 ### 小范围验证快照
@@ -76,6 +91,7 @@ DROP TABLE IF EXISTS ad_code_info;
 DROP TABLE IF EXISTS ad_stock_basic;
 DROP TABLE IF EXISTS ad_history_stock_status;
 DROP TABLE IF EXISTS ad_market_kline_daily;
+DROP TABLE IF EXISTS ad_market_kline_minute;
 DROP TABLE IF EXISTS ad_market_snapshot;
 DROP TABLE IF EXISTS ad_sync_task_log;
 DROP TABLE IF EXISTS ad_sync_checkpoint;

@@ -149,7 +149,6 @@ class MarketKlineQuery:
     code_list: tuple[str, ...]
     begin_date: date
     end_date: date
-    period: str
     begin_time: Optional[int] = None
     end_time: Optional[int] = None
 
@@ -253,7 +252,6 @@ class MarketKlineRow:
 
     trade_time: datetime
     code: str
-    period: str
     open: Optional[float] = None
     high: Optional[float] = None
     low: Optional[float] = None

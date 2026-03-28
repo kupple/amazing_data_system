@@ -12,6 +12,7 @@ except Exception:  # pragma: no cover
 from amazingdata_constants import KLINE_FIELDS, SNAPSHOT_FIELDS
 from clickhouse_tables import (
     AD_MARKET_KLINE_DAILY_TABLE,
+    AD_MARKET_KLINE_MINUTE_TABLE,
     AD_MARKET_SNAPSHOT_TABLE,
     iter_market_data_table_ddls,
 )
@@ -25,7 +26,6 @@ class MarketDataRepository(BaseDataRepository):
     MARKET_KLINE_COLUMNS = (
         "trade_time",
         "code",
-        "period",
         "open",
         "high",
         "low",
@@ -105,6 +105,15 @@ class MarketDataRepository(BaseDataRepository):
             partition_group_size=12,
         )
 
+    def save_market_kline_minute_rows(self, rows) -> int:
+        return self._insert_dataclass_rows_in_batches(
+            table=AD_MARKET_KLINE_MINUTE_TABLE,
+            columns=self.MARKET_KLINE_COLUMNS,
+            rows=rows,
+            partition_field="trade_time",
+            partition_group_size=1,
+        )
+
     def save_market_snapshot_rows(self, rows) -> int:
         return self._insert_dataclass_rows_in_batches(
             table=AD_MARKET_SNAPSHOT_TABLE,
@@ -114,18 +123,42 @@ class MarketDataRepository(BaseDataRepository):
             partition_group_size=12,
         )
 
-    def load_latest_kline_trade_date(self, code_list: list[str], period: str):
+    def load_latest_kline_trade_date(self, code_list: list[str]):
+        if not code_list:
+            return None
+        return self._load_latest_trade_date(AD_MARKET_KLINE_DAILY_TABLE, code_list)
+
+    def load_latest_kline_minute_trade_date(self, code_list: list[str]):
+        if not code_list:
+            return None
+        return self._load_latest_trade_date(AD_MARKET_KLINE_MINUTE_TABLE, code_list)
+
+    def load_latest_kline_trade_date_map(self, code_list: list[str]) -> dict[str, object]:
+        if not code_list:
+            return {}
+        return self._load_latest_trade_date_map(AD_MARKET_KLINE_DAILY_TABLE, code_list)
+
+    def load_latest_kline_minute_trade_date_map(self, code_list: list[str]) -> dict[str, object]:
+        if not code_list:
+            return {}
+        return self._load_latest_trade_date_map(AD_MARKET_KLINE_MINUTE_TABLE, code_list)
+
+    def load_latest_snapshot_trade_date(self, code_list: list[str]):
+        if not code_list:
+            return None
+        return self._load_latest_trade_date(AD_MARKET_SNAPSHOT_TABLE, code_list)
+
+    def _load_latest_trade_date(self, table_name: str, code_list: list[str]):
         if not code_list:
             return None
         sql = f"""
         SELECT code, max(toDate(trade_time)) AS latest_trade_date
-        FROM {AD_MARKET_KLINE_DAILY_TABLE}
-        WHERE period = {{period:String}}
-          AND code IN {{code_list:Array(String)}}
+        FROM {table_name}
+        WHERE code IN {{code_list:Array(String)}}
         GROUP BY code
         ORDER BY code
         """
-        rows = self.client.query_rows(sql, {"period": period, "code_list": code_list})
+        rows = self.client.query_rows(sql, {"code_list": code_list})
         if len(rows) != len(code_list):
             return None
         latest_dates = [row[1] for row in rows if len(row) > 1 and row[1] is not None]
@@ -133,18 +166,17 @@ class MarketDataRepository(BaseDataRepository):
             return None
         return min(latest_dates)
 
-    def load_latest_kline_trade_date_map(self, code_list: list[str], period: str) -> dict[str, object]:
+    def _load_latest_trade_date_map(self, table_name: str, code_list: list[str]) -> dict[str, object]:
         if not code_list:
             return {}
         sql = f"""
         SELECT code, max(toDate(trade_time)) AS latest_trade_date
-        FROM {AD_MARKET_KLINE_DAILY_TABLE}
-        WHERE period = {{period:String}}
-          AND code IN {{code_list:Array(String)}}
+        FROM {table_name}
+        WHERE code IN {{code_list:Array(String)}}
         GROUP BY code
         ORDER BY code
         """
-        rows = self.client.query_rows(sql, {"period": period, "code_list": code_list})
+        rows = self.client.query_rows(sql, {"code_list": code_list})
         result = {str(code): None for code in code_list}
         for row in rows:
             if not row:
@@ -158,25 +190,21 @@ class MarketDataRepository(BaseDataRepository):
             result[code] = latest_trade_date
         return result
 
-    def load_latest_snapshot_trade_date(self, code_list: list[str]):
-        if not code_list:
-            return None
-        sql = f"""
-        SELECT code, max(toDate(trade_time)) AS latest_trade_date
-        FROM {AD_MARKET_SNAPSHOT_TABLE}
-        WHERE code IN {{code_list:Array(String)}}
-        GROUP BY code
-        ORDER BY code
-        """
-        rows = self.client.query_rows(sql, {"code_list": code_list})
-        if len(rows) != len(code_list):
-            return None
-        latest_dates = [row[1] for row in rows if len(row) > 1 and row[1] is not None]
-        if not latest_dates:
-            return None
-        return min(latest_dates)
-
     def load_kline_dict(self, query: MarketKlineQuery):
+        if pd is None:  # pragma: no cover
+            raise RuntimeError("未安装 pandas，无法返回 DataFrame。")
+        if not query.code_list:
+            return {}
+        return self._load_kline_dict_from_table(AD_MARKET_KLINE_DAILY_TABLE, query)
+
+    def load_kline_minute_dict(self, query: MarketKlineQuery):
+        if pd is None:  # pragma: no cover
+            raise RuntimeError("未安装 pandas，无法返回 DataFrame。")
+        if not query.code_list:
+            return {}
+        return self._load_kline_dict_from_table(AD_MARKET_KLINE_MINUTE_TABLE, query)
+
+    def _load_kline_dict_from_table(self, table_name: str, query: MarketKlineQuery):
         if pd is None:  # pragma: no cover
             raise RuntimeError("未安装 pandas，无法返回 DataFrame。")
         if not query.code_list:
@@ -192,9 +220,8 @@ class MarketDataRepository(BaseDataRepository):
             any(close) AS close,
             any(volume) AS volume,
             any(amount) AS amount
-        FROM {AD_MARKET_KLINE_DAILY_TABLE}
-        WHERE period = {{period:String}}
-          AND code IN {{code_list:Array(String)}}
+        FROM {table_name}
+        WHERE code IN {{code_list:Array(String)}}
           AND toDate(trade_time) >= {{begin_date:Date}}
           AND toDate(trade_time) <= {{end_date:Date}}
         GROUP BY code, trade_time
@@ -203,7 +230,6 @@ class MarketDataRepository(BaseDataRepository):
         frame = self.client.query_df(
             sql,
             {
-                "period": query.period,
                 "code_list": list(query.code_list),
                 "begin_date": query.begin_date,
                 "end_date": query.end_date,

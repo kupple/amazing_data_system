@@ -8,6 +8,7 @@
 
 正式任务：
 - `daily_kline`
+- `minute_kline`
 - `market_snapshot`
 """
 
@@ -30,7 +31,7 @@ DEFAULT_SYNC_SECURITY_TYPE = SecurityType.EXTRA_STOCK_A
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AmazingData 正式同步入口")
-    parser.add_argument("task", choices=["daily_kline", "market_snapshot"])
+    parser.add_argument("task", choices=["daily_kline", "minute_kline", "market_snapshot"])
     parser.add_argument("--env-file", default=".env", help=argparse.SUPPRESS)
     parser.add_argument("--codes", default="", help="逗号分隔的证券代码列表；不传则自动从代码池获取")
     parser.add_argument("--begin-date", type=int, help="开始日期 YYYYMMDD；默认 20100101")
@@ -80,6 +81,15 @@ def main() -> int:
 
         if args.task == "daily_kline":
             return run_daily_kline(
+                market_data=market_data,
+                code_list=code_list,
+                begin_date=begin_date,
+                end_date=end_date,
+                force=args.force,
+            )
+
+        if args.task == "minute_kline":
+            return run_minute_kline(
                 market_data=market_data,
                 code_list=code_list,
                 begin_date=begin_date,
@@ -182,6 +192,43 @@ def run_market_snapshot(
         total_inserted += int(inserted)
 
     logger.info("market_snapshot finished total_inserted=%s", total_inserted)
+    return 0
+
+
+def run_minute_kline(
+    market_data: MarketData,
+    code_list: list[str],
+    begin_date: int,
+    end_date: int,
+    force: bool,
+) -> int:
+    """按单只股票顺序同步 1 分钟 K 线."""
+
+    total_inserted = 0
+    logger.info(
+        "minute_kline start total_codes=%s begin_date=%s end_date=%s",
+        len(code_list),
+        begin_date,
+        end_date,
+    )
+    for index, code in enumerate(code_list, start=1):
+        logger.info(
+            "minute_kline progress=%s/%s security_type=%s period=%s",
+            index,
+            len(code_list),
+            DEFAULT_SYNC_SECURITY_TYPE,
+            PeriodName.MIN1,
+        )
+        inserted = market_data.sync_kline_minute(
+            code_list=[code],
+            begin_date=begin_date,
+            end_date=end_date,
+            force=force,
+        )
+        logger.info("minute_kline progress=%s/%s inserted_rows=%s", index, len(code_list), inserted)
+        total_inserted += int(inserted)
+
+    logger.info("minute_kline finished total_inserted=%s", total_inserted)
     return 0
 
 

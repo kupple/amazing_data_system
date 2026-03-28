@@ -17,7 +17,7 @@ from typing import Callable, Iterable, Optional, Protocol, Sequence
 from amazingdata_constants import PeriodName, SyncStatus
 from base_data import BaseDataCacheMissError, BaseDataParameterError
 from clickhouse_client import ClickHouseConfig, create_clickhouse_client
-from clickhouse_tables import AD_MARKET_KLINE_DAILY_TABLE, AD_MARKET_SNAPSHOT_TABLE
+from clickhouse_tables import AD_MARKET_KLINE_DAILY_TABLE, AD_MARKET_KLINE_MINUTE_TABLE, AD_MARKET_SNAPSHOT_TABLE
 from data_models import (
     MarketKlineQuery,
     MarketKlineRow,
@@ -121,11 +121,10 @@ class MarketData:
         )
 
         result = self.repository.load_kline_dict(
-            MarketKlineQuery(
-                code_list=tuple(normalized_codes),
+            self._build_kline_query(
+                code_list=normalized_codes,
                 begin_date=begin,
                 end_date=end,
-                period=period_token,
                 begin_time=begin_time,
                 end_time=end_time,
             )
@@ -141,18 +140,75 @@ class MarketData:
                 force=True,
             )
             result = self.repository.load_kline_dict(
-                MarketKlineQuery(
-                    code_list=tuple(normalized_codes),
+                self._build_kline_query(
+                    code_list=normalized_codes,
                     begin_date=begin,
                     end_date=end,
-                    period=period_token,
                     begin_time=begin_time,
                     end_time=end_time,
                 )
             )
         if not result:
             raise BaseDataCacheMissError(
-                f"未找到 code_count={len(normalized_codes)} period={period_token} 的 kline 数据。"
+                f"未找到 code_count={len(normalized_codes)} 的日线 kline 数据。"
+            )
+        return result
+
+    def query_kline_minute(
+        self,
+        code_list: Sequence[str],
+        begin_date: int,
+        end_date: int,
+        begin_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+    ):
+        normalized_codes = normalize_code_list(code_list)
+        if not normalized_codes:
+            raise BaseDataParameterError("code_list 不能为空。")
+
+        begin = to_ch_date(begin_date)
+        end = to_ch_date(end_date)
+        self._validate_date_range(begin, end)
+
+        self.sync_kline_minute(
+            code_list=normalized_codes,
+            begin_date=begin,
+            end_date=end,
+            begin_time=begin_time,
+            end_time=end_time,
+            force=False,
+        )
+
+        result = self.repository.load_kline_minute_dict(
+            self._build_kline_query(
+                code_list=normalized_codes,
+                begin_date=begin,
+                end_date=end,
+                begin_time=begin_time,
+                end_time=end_time,
+            )
+        )
+        if not result:
+            self.sync_kline_minute(
+                code_list=normalized_codes,
+                begin_date=begin,
+                end_date=end,
+                begin_time=begin_time,
+                end_time=end_time,
+                force=True,
+            )
+            result = self.repository.load_kline_minute_dict(
+                self._build_kline_query(
+                    code_list=normalized_codes,
+                    begin_date=begin,
+                    end_date=end,
+                    begin_time=begin_time,
+                    end_time=end_time,
+                )
+            )
+        if not result:
+            raise BaseDataCacheMissError(
+                f"未找到 code_count={len(normalized_codes)} 的 1 分钟 kline 数据。"
             )
         return result
 
@@ -231,10 +287,10 @@ class MarketData:
         begin = to_ch_date(begin_date)
         end = to_ch_date(end_date)
         period_text = str(period).strip()
-        if period_text == PeriodName.DAY:
+        if period_text in {PeriodName.DAY, "10008"}:
             period_token = "10008"
         else:
-            period_token = self._resolve_period_token(period)
+            raise BaseDataParameterError("ad_market_kline_daily 只支持日线周期。")
         self._validate_date_range(begin, end)
         logger.info(
             "sync_kline prepared code_count=%s begin_date=%s end_date=%s raw_period=%s resolved_period=%s",
@@ -244,7 +300,7 @@ class MarketData:
             period,
             period_token,
         )
-        latest_date_map = self.repository.load_latest_kline_trade_date_map(normalized_codes, period_token)
+        latest_date_map = self.repository.load_latest_kline_trade_date_map(normalized_codes)
 
         total_inserted = 0
         for code_index, code in enumerate(normalized_codes, start=1):
@@ -253,20 +309,18 @@ class MarketData:
                 latest_date = to_ch_date(latest_date)
             sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
             logger.info(
-                "sync_kline code=%s progress=%s/%s latest_date=%s sync_start=%s resolved_period=%s",
+                "sync_kline code=%s progress=%s/%s latest_date=%s sync_start=%s",
                 code,
                 code_index,
                 len(normalized_codes),
                 latest_date,
                 sync_start,
-                period_token,
             )
             scope_key = self._build_market_scope_key(
                 task_name="query_kline",
                 code_list=[code],
                 begin_date=sync_start,
                 end_date=end,
-                period=period_token,
                 begin_time=begin_time,
                 end_time=end_time,
             )
@@ -279,11 +333,81 @@ class MarketData:
                     [code],
                     begin_date=sync_start,
                     end_date=end,
-                    period=period_token,
+                    period=PeriodName.DAY,
                     begin_time=begin_time,
                     end_time=end_time,
                 ),
                 save_rows=self.repository.save_market_kline_rows,
+                row_date_getter=lambda row: row.trade_time.date(),
+                force=force,
+            )
+            total_inserted += int(inserted)
+
+        return total_inserted
+
+    def sync_kline_minute(
+        self,
+        code_list: Sequence[str],
+        begin_date: date | int | str,
+        end_date: date | int | str,
+        begin_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        force: bool = False,
+    ) -> int:
+        normalized_codes = normalize_code_list(code_list)
+        if not normalized_codes:
+            raise BaseDataParameterError("code_list 不能为空。")
+
+        begin = to_ch_date(begin_date)
+        end = to_ch_date(end_date)
+        period_token = self._resolve_period_token(PeriodName.MIN1)
+        self._validate_date_range(begin, end)
+        logger.info(
+            "sync_kline_minute prepared code_count=%s begin_date=%s end_date=%s resolved_period=%s",
+            len(normalized_codes),
+            begin,
+            end,
+            period_token,
+        )
+        latest_date_map = self.repository.load_latest_kline_minute_trade_date_map(normalized_codes)
+
+        total_inserted = 0
+        for code_index, code in enumerate(normalized_codes, start=1):
+            latest_date = latest_date_map.get(code)
+            if latest_date is not None:
+                latest_date = to_ch_date(latest_date)
+            sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+            logger.info(
+                "sync_kline_minute code=%s progress=%s/%s latest_date=%s sync_start=%s",
+                code,
+                code_index,
+                len(normalized_codes),
+                latest_date,
+                sync_start,
+            )
+            scope_key = self._build_market_scope_key(
+                task_name="query_kline_minute",
+                code_list=[code],
+                begin_date=sync_start,
+                end_date=end,
+                period=period_token,
+                begin_time=begin_time,
+                end_time=end_time,
+            )
+            inserted = self._run_sync_job(
+                task_name="query_kline_minute",
+                scope_key=scope_key,
+                target_table=AD_MARKET_KLINE_MINUTE_TABLE,
+                latest_date=latest_date,
+                fetch_rows=lambda _latest_date, code=code, sync_start=sync_start: self._provider_fetch_kline(
+                    [code],
+                    begin_date=sync_start,
+                    end_date=end,
+                    period=PeriodName.MIN1,
+                    begin_time=begin_time,
+                    end_time=end_time,
+                ),
+                save_rows=self.repository.save_market_kline_minute_rows,
                 row_date_getter=lambda row: row.trade_time.date(),
                 force=force,
             )
@@ -476,6 +600,22 @@ class MarketData:
             end_time=end_time,
         )
 
+    @staticmethod
+    def _build_kline_query(
+        code_list: Sequence[str],
+        begin_date: date,
+        end_date: date,
+        begin_time: Optional[int],
+        end_time: Optional[int],
+    ) -> MarketKlineQuery:
+        return MarketKlineQuery(
+            code_list=tuple(code_list),
+            begin_date=begin_date,
+            end_date=end_date,
+            begin_time=begin_time,
+            end_time=end_time,
+        )
+
     def _provider_fetch_snapshot(
         self,
         code_list: Sequence[str],
@@ -530,33 +670,15 @@ class MarketData:
         text = str(period).strip()
         if not text:
             raise BaseDataParameterError("period 不能为空。")
-        if text in self._period_cache:
-            logger.info("resolve_period_token cache_hit raw_period=%s resolved_period=%s", period, self._period_cache[text])
-            return self._period_cache[text]
-        # 当前项目第一阶段只正式同步日线。
-        # 你已经确认官方 SDK 的 `Period.day.value == 10008`，
-        # 这里直接短路到官方枚举值，避免运行时动态解析卡住。
         if text == PeriodName.DAY:
-            self._period_cache[text] = "10008"
-            logger.info("resolve_period_token shortcut raw_period=%s resolved_period=%s", period, "10008")
             return "10008"
-        if text.isdigit():
-            self._period_cache[text] = text
-            logger.info("resolve_period_token numeric raw_period=%s resolved_period=%s", period, text)
+        if text == PeriodName.MIN1:
+            if self.sync_provider is None or not hasattr(self.sync_provider, "session"):
+                raise BaseDataParameterError("无法解析 1 分钟周期枚举。")
+            return str(self.sync_provider.session.resolve_period_value(text))  # type: ignore[attr-defined]
+        if text == "10008":
             return text
-        if self.sync_provider is None or not hasattr(self.sync_provider, "session"):
-            self._period_cache[text] = text
-            logger.info("resolve_period_token fallback raw_period=%s resolved_period=%s", period, text)
-            return text
-        try:
-            resolved = str(self.sync_provider.session.resolve_period_value(text))  # type: ignore[attr-defined]
-            self._period_cache[text] = resolved
-            logger.info("resolve_period_token sdk raw_period=%s resolved_period=%s", period, resolved)
-            return resolved
-        except Exception:
-            self._period_cache[text] = text
-            logger.warning("resolve_period_token sdk_failed raw_period=%s fallback_period=%s", period, text)
-            return text
+        raise BaseDataParameterError("当前只支持日线和 1 分钟周期。")
 
     @staticmethod
     def _resolve_incremental_start_date(
