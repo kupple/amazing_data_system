@@ -37,6 +37,7 @@ from data_models import (
     StockBasicRow,
     TradeCalendarRow,
     normalize_code_list,
+    should_keep_security_code,
     to_ch_date,
     to_yyyymmdd,
 )
@@ -298,7 +299,7 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
 
         for code, row in frame.iterrows():
             market_code = str(code).strip()
-            if not market_code:
+            if not should_keep_security_code(market_code, security_type=security_type):
                 continue
             yield CodeInfoRow(
                 security_type=security_type,

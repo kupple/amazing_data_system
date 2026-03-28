@@ -61,6 +61,34 @@ def normalize_code_list(code_list: Sequence[str]) -> list[str]:
     return normalized
 
 
+BJ_920_ONLY_SECURITY_TYPES = frozenset(
+    {
+        "EXTRA_STOCK_A",
+        "SH_A",
+        "SZ_A",
+        "BJ_A",
+        "EXTRA_STOCK_A_SH_SZ",
+    }
+)
+
+
+def should_keep_security_code(code: str, security_type: str | None = None) -> bool:
+    """统一的证券代码过滤规则.
+
+    当前规则：
+    - 对股票代码池，如果代码以 `.BJ` 结尾，则只保留 `920xxx.BJ`
+    - 其他代码维持原样
+    """
+
+    text = str(code).strip()
+    if not text:
+        return False
+    if security_type in BJ_920_ONLY_SECURITY_TYPES and text.endswith(".BJ"):
+        prefix = text.split(".", 1)[0]
+        return prefix.startswith("920")
+    return True
+
+
 @dataclass(frozen=True)
 class CalendarQuery:
     """交易日历查询参数."""
@@ -342,6 +370,7 @@ __all__ = [
     "CalendarQuery",
     "CodeInfoQuery",
     "CodeInfoRow",
+    "BJ_920_ONLY_SECURITY_TYPES",
     "HistoryStockStatusQuery",
     "HistoryStockStatusRow",
     "MarketKlineQuery",
@@ -358,6 +387,7 @@ __all__ = [
     "SyncTaskLogRow",
     "TradeCalendarRow",
     "normalize_code_list",
+    "should_keep_security_code",
     "to_ch_date",
     "to_yyyymmdd",
     "utcnow",

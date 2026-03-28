@@ -36,6 +36,7 @@ from data_models import (
     SyncCheckpointRow,
     SyncTaskLogRow,
     TradeCalendarRow,
+    should_keep_security_code,
     to_ch_date,
 )
 
@@ -284,6 +285,14 @@ class BaseDataRepository:
             sql,
             {"security_type": query.security_type},
         )
+        if frame.empty:
+            return frame
+        filtered_codes = [
+            code
+            for code in frame["code"].tolist()
+            if should_keep_security_code(code, security_type=query.security_type)
+        ]
+        frame = frame[frame["code"].isin(filtered_codes)].copy()
         if frame.empty:
             return frame
         frame = frame.set_index("code")
