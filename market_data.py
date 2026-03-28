@@ -308,6 +308,17 @@ class MarketData:
             if latest_date is not None:
                 latest_date = to_ch_date(latest_date)
             sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+            if sync_start is not None and sync_start > end:
+                logger.info(
+                    "sync_kline code=%s progress=%s/%s latest_date=%s sync_start=%s end_date=%s no_new_window_skip",
+                    code,
+                    code_index,
+                    len(normalized_codes),
+                    latest_date,
+                    sync_start,
+                    end,
+                )
+                continue
             logger.info(
                 "sync_kline code=%s progress=%s/%s latest_date=%s sync_start=%s",
                 code,
@@ -377,6 +388,17 @@ class MarketData:
             if latest_date is not None:
                 latest_date = to_ch_date(latest_date)
             sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+            if sync_start is not None and sync_start > end:
+                logger.info(
+                    "sync_kline_minute code=%s progress=%s/%s latest_date=%s sync_start=%s end_date=%s no_new_window_skip",
+                    code,
+                    code_index,
+                    len(normalized_codes),
+                    latest_date,
+                    sync_start,
+                    end,
+                )
+                continue
             logger.info(
                 "sync_kline_minute code=%s progress=%s/%s latest_date=%s sync_start=%s",
                 code,
@@ -448,6 +470,14 @@ class MarketData:
         )
         latest_date = self.repository.load_sync_checkpoint_date("query_snapshot", scope_key)
         sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        if sync_start is not None and sync_start > end:
+            logger.info(
+                "sync_snapshot latest_date=%s sync_start=%s end_date=%s no_new_window_skip",
+                latest_date,
+                sync_start,
+                end,
+            )
+            return 0
         logger.info(
             "sync_snapshot latest_date=%s sync_start=%s code_count=%s",
             latest_date,
