@@ -101,8 +101,7 @@ class MarketDataRepository(BaseDataRepository):
             table=AD_MARKET_KLINE_DAILY_TABLE,
             columns=self.MARKET_KLINE_COLUMNS,
             rows=rows,
-            partition_field="trade_time",
-            partition_group_size=12,
+            single_insert=True,
         )
 
     def save_market_kline_minute_rows(self, rows) -> int:
@@ -110,8 +109,7 @@ class MarketDataRepository(BaseDataRepository):
             table=AD_MARKET_KLINE_MINUTE_TABLE,
             columns=self.MARKET_KLINE_COLUMNS,
             rows=rows,
-            partition_field="trade_time",
-            partition_group_size=1,
+            single_insert=True,
         )
 
     def save_market_snapshot_rows(self, rows) -> int:
@@ -119,8 +117,7 @@ class MarketDataRepository(BaseDataRepository):
             table=AD_MARKET_SNAPSHOT_TABLE,
             columns=self.MARKET_SNAPSHOT_COLUMNS,
             rows=rows,
-            partition_field="trade_time",
-            partition_group_size=12,
+            single_insert=True,
         )
 
     def load_latest_kline_trade_date(self, code_list: list[str]):

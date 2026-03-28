@@ -116,7 +116,7 @@ class BaseDataRepository:
             table=AD_TRADE_CALENDAR_TABLE,
             columns=self.TRADE_CALENDAR_COLUMNS,
             rows=rows,
-            partition_field="trade_date",
+            single_insert=True,
         )
 
     def save_code_info_rows(self, rows: Iterable[CodeInfoRow]) -> int:
@@ -124,6 +124,7 @@ class BaseDataRepository:
             table=AD_CODE_INFO_TABLE,
             columns=self.CODE_INFO_COLUMNS,
             rows=rows,
+            single_insert=True,
         )
 
     def save_hist_code_daily_rows(self, rows: Iterable[HistCodeDailyRow]) -> int:
@@ -131,7 +132,7 @@ class BaseDataRepository:
             table=AD_HIST_CODE_DAILY_TABLE,
             columns=self.HIST_CODE_DAILY_COLUMNS,
             rows=rows,
-            partition_field="trade_date",
+            single_insert=True,
         )
 
     def save_price_factor_rows(self, rows: Iterable[PriceFactorRow]) -> int:
@@ -139,7 +140,7 @@ class BaseDataRepository:
             table=AD_PRICE_FACTOR_TABLE,
             columns=self.PRICE_FACTOR_COLUMNS,
             rows=rows,
-            partition_field="trade_date",
+            single_insert=True,
         )
 
     def insert_sync_log(self, row: SyncTaskLogRow) -> None:
@@ -352,8 +353,21 @@ class BaseDataRepository:
         rows: Iterable[object],
         partition_field: str | None = None,
         partition_group_size: int | None = None,
+        single_insert: bool = False,
     ) -> int:
         total = 0
+        if single_insert:
+            payload: list[tuple] = []
+            for row in rows:
+                record = asdict(row)
+                payload.append(tuple(record[column] for column in columns))
+            if not payload:
+                return 0
+            self.client.insert_rows(table, columns, payload)
+            total += len(payload)
+            logger.info("Inserted %s rows into %s single_insert=true", len(payload), table)
+            return total
+
         if partition_field is None:
             batch: list[tuple] = []
 

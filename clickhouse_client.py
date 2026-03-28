@@ -33,8 +33,8 @@ class ClickHouseConfig:
     password: str = ""
     database: str = "default"
     secure: bool = False
-    connect_timeout: int = 10
-    send_receive_timeout: int = 30
+    connect_timeout: int = 30
+    send_receive_timeout: int = 300
     settings: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
