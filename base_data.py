@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Callable, Iterable, Optional, Protocol, Sequence
 
 try:
@@ -796,9 +796,10 @@ class BaseData:
     ) -> Optional[date]:
         if latest_date is None:
             return requested_begin_date
+        next_date = latest_date + timedelta(days=1)
         if requested_begin_date is None:
-            return latest_date
-        return max(latest_date, requested_begin_date)
+            return next_date
+        return max(next_date, requested_begin_date)
 
     @staticmethod
     def _validate_local_path(local_path: str) -> None:

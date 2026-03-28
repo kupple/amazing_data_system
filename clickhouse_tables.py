@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS {AD_CODE_INFO_TABLE}
     low_limited Nullable(Float64),
     price_tick Nullable(Float64)
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 ORDER BY (security_type, code)
 """
 
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS {AD_HIST_CODE_DAILY_TABLE}
     security_type LowCardinality(String),
     code String
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (security_type, trade_date, code)
 """
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS {AD_PRICE_FACTOR_TABLE}
     code String,
     factor_value Float64
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (factor_type, code, trade_date)
 """
@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS {AD_STOCK_BASIC_TABLE}
     comp_sname_eng Nullable(String),
     is_listed Nullable(Int32)
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(snapshot_date)
 ORDER BY (snapshot_date, market_code)
 """
@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS {AD_HISTORY_STOCK_STATUS_TABLE}
     is_wd_sec Nullable(String),
     is_xr_sec Nullable(String)
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (trade_date, market_code)
 """
@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS {AD_MARKET_KLINE_DAILY_TABLE}
     volume Nullable(Float64),
     amount Nullable(Float64)
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(toDate(trade_time))
 ORDER BY (period, code, trade_time)
 """
@@ -248,7 +248,7 @@ CREATE TABLE IF NOT EXISTS {AD_MARKET_SNAPSHOT_TABLE}
     offer_price_limit_up Nullable(Float64),
     offer_price_limit_down Nullable(Float64)
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(toDate(trade_time))
 ORDER BY (code, trade_time)
 """
